@@ -1,0 +1,103 @@
+# macOS Apple Silicon 版：編譯、附上 ffmpeg 與 ONNX Runtime 包成 .app，再做成 DMG。
+# 推 v* 標籤或在 GitHub 發布 Release 時，DMG 會附到該 Release；其他時候只留 Actions 的 artifact。
+name: macOS build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ORT_VERSION: "1.22.0"
+  # ffmpeg-static 的靜態版（GPL，含 libx264），不依賴 Homebrew 的動態函式庫
+  FFMPEG_BASE: https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0
+  MODEL_URL: https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  macos:
+    # macos-latest 是 Apple Silicon（arm64）主機
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test --release --lib --bins
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Fetch ffmpeg and ONNX Runtime
+        run: |
+          mkdir -p deps
+          curl -L --fail -o deps/ffmpeg "$FFMPEG_BASE/ffmpeg-darwin-arm64"
+          curl -L --fail -o deps/ffprobe "$FFMPEG_BASE/ffprobe-darwin-arm64"
+          curl -L --fail -o deps/ffmpeg.LICENSE "$FFMPEG_BASE/darwin-arm64.LICENSE"
+          curl -L --fail -o deps/ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-osx-arm64-$ORT_VERSION.tgz"
+          tar -xzf deps/ort.tgz -C deps
+          file deps/ffmpeg deps/ffprobe
+
+      - name: Assemble app bundle
+        run: |
+          app="dist/TIME ECHO.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/presets" "$app/Contents/Resources/licenses"
+          cp packaging/macos/Info.plist "$app/Contents/Info.plist"
+          cp target/release/time-echo "$app/Contents/MacOS/"
+          # 程式會在執行檔旁找 ffmpeg、ffprobe 與 libonnxruntime.dylib
+          cp deps/ffmpeg deps/ffprobe "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/ffmpeg" "$app/Contents/MacOS/ffprobe"
+          ort="deps/onnxruntime-osx-arm64-$ORT_VERSION"
+          cp -L "$ort/lib/libonnxruntime.dylib" "$app/Contents/MacOS/libonnxruntime.dylib"
+          cp presets/*.json "$app/Contents/Resources/presets/"
+          cp "$ort/LICENSE" "$app/Contents/Resources/licenses/onnxruntime-LICENSE.txt"
+          cp deps/ffmpeg.LICENSE "$app/Contents/Resources/licenses/ffmpeg-LICENSE.txt"
+          # 沒有開發者憑證，只做 ad-hoc 簽章（Apple Silicon 上沒簽章的程式不能執行）
+          codesign --force --sign - "$app/Contents/MacOS/ffmpeg" "$app/Contents/MacOS/ffprobe" "$app/Contents/MacOS/libonnxruntime.dylib"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          find "$app" -type f -exec ls -l {} +
+
+      - name: Smoke test (bundled ffmpeg, GPU, ONNX Runtime)
+        run: |
+          exe="$GITHUB_WORKSPACE/dist/TIME ECHO.app/Contents/MacOS/time-echo"
+          "$GITHUB_WORKSPACE/dist/TIME ECHO.app/Contents/MacOS/ffmpeg" -hide_banner -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=30:duration=2" -pix_fmt yuv420p smoke-in.mp4
+          # 從暫存資料夾執行，確認只靠 App 裡的檔案就找得到 ffmpeg 與 ONNX Runtime
+          cd "$RUNNER_TEMP"
+          "$exe" render -i "$GITHUB_WORKSPACE/smoke-in.mp4" -o "$RUNNER_TEMP/smoke-luma.mp4" --demo --matte luma --frames 30
+          curl -L --fail -o "$RUNNER_TEMP/rvm.onnx" "$MODEL_URL"
+          "$exe" render -i "$GITHUB_WORKSPACE/smoke-in.mp4" -o "$RUNNER_TEMP/smoke-ai.mp4" --demo --matte ai --model "$RUNNER_TEMP/rvm.onnx" --frames 30
+          ls -l "$RUNNER_TEMP"/smoke-*.mp4
+
+      - name: Create DMG
+        run: |
+          stage=dist/dmg
+          mkdir -p "$stage"
+          cp -R "dist/TIME ECHO.app" "$stage/"
+          ln -s /Applications "$stage/Applications"
+          cp packaging/macos/README-macOS.txt "$stage/"
+          hdiutil create -volname "TIME ECHO" -srcfolder "$stage" -ov -format UDZO dist/time-echo-macos-arm64.dmg
+          ls -l dist/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: time-echo-macos-arm64
+          path: dist/time-echo-macos-arm64.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/time-echo-macos-arm64.dmg
+          append_body: true
+          body: |
+            macOS Apple Silicon 版：下載 time-echo-macos-arm64.dmg，把 TIME ECHO 拖進「應用程式」。
+            這版沒有公證，第一次開啟請對 App 按右鍵 →「打開」。說明見 DMG 內的 README-macOS.txt。

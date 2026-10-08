@@ -25,12 +25,26 @@ pub trait Segmenter: Send {
 
 pub const DEFAULT_MODEL_FILE: &str = "rvm_mobilenetv3_fp32.onnx";
 
-/// 找模型檔：環境變數 → ./models → 執行檔旁的 models。
+/// macOS 的 .app 可能放在唯讀的 DMG 或 /Applications，而且從 Finder 開啟時工作目錄是 /，
+/// 所以打包版把模型放在使用者資料夾：~/Library/Application Support/time-echo/models。
+fn bundle_models_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    if !exe.to_string_lossy().contains(".app/Contents/MacOS/") {
+        return None;
+    }
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/time-echo/models"))
+}
+
+/// 找模型檔：環境變數 → ./models → 執行檔旁的 models → macOS 打包版的使用者資料夾。
 pub fn find_model() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("TIME_ECHO_MODEL").map(PathBuf::from) {
         return Some(p);
     }
     let mut dirs = vec![PathBuf::from("models")];
+    dirs.extend(bundle_models_dir());
     if let Ok(exe) = std::env::current_exe() {
         for anc in exe.ancestors().skip(1).take(4) {
             dirs.push(anc.join("models"));
@@ -69,11 +83,12 @@ pub fn find_ort_library() -> Option<PathBuf> {
 /// 分割模型的下載網址（Robust Video Matting 官方 release，約 15 MB）
 pub const MODEL_URL: &str = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx";
 
-/// 用系統內建的 curl（macOS、Windows 10 以後都有）下載模型到執行檔旁的 models/，
-/// 那裡寫不進去就放 ./models。阻塞，請在背景執行緒呼叫。
+/// 用系統內建的 curl（macOS、Windows 10 以後都有）下載模型到執行檔旁的 models/
+/// （macOS 打包版是使用者資料夾），那裡寫不進去就放 ./models。阻塞，請在背景執行緒呼叫。
 pub fn download_model() -> Result<PathBuf> {
     use anyhow::{Context, bail};
-    let dirs: Vec<PathBuf> = crate::source::exe_dir().map(|d| d.join("models")).into_iter().chain([PathBuf::from("models")]).collect();
+    let dirs: Vec<PathBuf> =
+        bundle_models_dir().into_iter().chain(crate::source::exe_dir().map(|d| d.join("models"))).chain([PathBuf::from("models")]).collect();
     let dir = dirs.into_iter().find(|d| std::fs::create_dir_all(d).is_ok()).context("沒有可寫入的 models 資料夾")?;
     let dest = dir.join(DEFAULT_MODEL_FILE);
     let part = dir.join(format!("{DEFAULT_MODEL_FILE}.part"));
