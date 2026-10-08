@@ -1,5 +1,6 @@
-//! 來源：影片檔（ffmpeg 解碼）、攝影機（nokhwa，或 ffmpeg 的 AVFoundation 輸入）。
+//! 來源：影片檔（ffmpeg 解碼）、攝影機（nokhwa，或 ffmpeg 的 AVFoundation／DirectShow 輸入）。
 
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -35,15 +36,41 @@ fn ffprobe_bin() -> PathBuf {
     find_tool("ffprobe")
 }
 
-/// 從 Finder 開啟的 App 拿不到 shell 的 PATH，所以也找 Homebrew 的位置。
+/// 缺 ffmpeg 時的安裝提示
+pub const FFMPEG_HINT: &str = if cfg!(target_os = "windows") {
+    "找不到 ffmpeg：ffmpeg.exe 與 ffprobe.exe 要放在 time-echo.exe 旁的 ffmpeg 資料夾"
+} else {
+    "找不到 ffmpeg（請先安裝：brew install ffmpeg）"
+};
+
+/// 執行檔所在資料夾（Windows 版把 ffmpeg、ONNX Runtime、模型放在這裡）
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
+}
+
+/// 先找執行檔旁（Windows 打包版），再找 Homebrew 的位置：從 Finder 開啟的 App 拿不到 shell 的 PATH。
 fn find_tool(name: &str) -> PathBuf {
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let p = Path::new(dir).join(name);
-        if p.exists() {
-            return p;
-        }
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let mut dirs = Vec::new();
+    if let Some(d) = exe_dir() {
+        dirs.push(d.join("ffmpeg"));
+        dirs.push(d);
     }
-    PathBuf::from(name)
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
+    dirs.into_iter().map(|d| d.join(&file)).find(|p| p.exists()).unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// 子程序。Windows 的視窗程式呼叫 ffmpeg 時預設會多跳一個黑色主控台視窗，這裡關掉。
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
 }
 
 #[derive(Clone, Debug)]
@@ -57,13 +84,13 @@ pub struct VideoInfo {
 
 /// 用 ffprobe 讀尺寸（已考慮旋轉）、影格率與總張數。
 pub fn probe(path: &Path) -> Result<VideoInfo> {
-    let out = Command::new(ffprobe_bin())
+    let out = command(ffprobe_bin())
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
         .arg("stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames:stream_side_data=rotation:stream_tags=rotate")
         .args(["-of", "default=noprint_wrappers=1"])
         .arg(path)
         .output()
-        .context("找不到 ffprobe（請先安裝 ffmpeg：brew install ffmpeg）")?;
+        .context(FFMPEG_HINT)?;
     if !out.status.success() {
         bail!("ffprobe 讀不了這個檔案：{}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -103,14 +130,14 @@ struct FfmpegPipe {
 
 impl FfmpegPipe {
     fn spawn(input_args: &[String], width: u32, height: u32, queue: usize) -> Result<Self> {
-        let mut child = Command::new(ffmpeg_bin())
+        let mut child = command(ffmpeg_bin())
             .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
             .args(input_args)
             .args(["-vf", &format!("scale={width}:{height}:flags=bilinear"), "-pix_fmt", "rgba", "-f", "rawvideo", "-"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("找不到 ffmpeg（請先安裝：brew install ffmpeg）")?;
+            .context(FFMPEG_HINT)?;
         let mut stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
         let (tx, rx): (SyncSender<Frame>, _) = mpsc::sync_channel(queue);
@@ -251,7 +278,8 @@ impl LiveState {
     }
 }
 
-/// macOS 備援：用 ffmpeg 的 AVFoundation 輸入讀攝影機。
+/// 備援：用 ffmpeg 讀攝影機（macOS AVFoundation、Windows DirectShow、Linux V4L2）。
+/// `device` 是裝置編號；Windows 也可以直接填 DirectShow 裝置名稱。
 pub struct FfmpegCamera {
     pipe: FfmpegPipe,
     device: String,
@@ -265,6 +293,17 @@ impl FfmpegCamera {
             ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", &format!("{device}:none")]
                 .map(String::from)
                 .to_vec()
+        } else if cfg!(target_os = "windows") {
+            let name = if device.chars().all(|c| c.is_ascii_digit()) {
+                let idx: usize = device.parse().unwrap_or(0);
+                let names = dshow_video_devices();
+                names.get(idx).cloned().ok_or_else(|| anyhow!("找不到第 {idx} 個攝影機（共 {} 個）", names.len()))?
+            } else {
+                device.to_string()
+            };
+            ["-f", "dshow", "-framerate", "30", "-video_size", "1280x720", "-i", &format!("video={name}")]
+                .map(String::from)
+                .to_vec()
         } else {
             ["-f", "v4l2", "-framerate", "30", "-video_size", "1280x720", "-i", &format!("/dev/video{device}")]
                 .map(String::from)
@@ -273,6 +312,39 @@ impl FfmpegCamera {
         let pipe = FfmpegPipe::spawn(&args, w, h, 2)?;
         Ok(FfmpegCamera { pipe, device: device.to_string(), live: LiveState { paused: false, last_time: None } })
     }
+}
+
+/// 列出 DirectShow 視訊裝置名稱（ffmpeg 把清單印在 stderr）。
+fn dshow_video_devices() -> Vec<String> {
+    let Ok(out) = command(ffmpeg_bin()).args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]).output() else {
+        return Vec::new();
+    };
+    parse_dshow_devices(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn parse_dshow_devices(log: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_video = true; // 舊版 ffmpeg 用標題分段，新版每行標 (video)/(audio)
+    for line in log.lines() {
+        if line.contains("DirectShow video devices") {
+            in_video = true;
+        } else if line.contains("DirectShow audio devices") {
+            in_video = false;
+        }
+        if line.contains("Alternative name") {
+            continue;
+        }
+        let (Some(a), Some(b)) = (line.find('"'), line.rfind('"')) else { continue };
+        if b <= a {
+            continue;
+        }
+        let tagged_video = line.contains("(video)");
+        let tagged_audio = line.contains("(audio)") || line.contains("(none)");
+        if tagged_video || (in_video && !tagged_audio) {
+            names.push(line[a + 1..b].to_string());
+        }
+    }
+    names
 }
 
 impl Source for FfmpegCamera {
@@ -429,5 +501,27 @@ mod nokhwa_cam {
         fn error(&self) -> Option<String> {
             self.error.clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dshow_devices;
+
+    #[test]
+    fn parses_dshow_device_list() {
+        // 新版格式（每行標類型）
+        let new = r#"[in#0 @ 0000] "Integrated Camera" (video)
+[in#0 @ 0000]   Alternative name "@device_pnp_\\?\usb#vid"
+[in#0 @ 0000] "OBS Virtual Camera" (video)
+[in#0 @ 0000] "Microphone Array" (audio)"#;
+        assert_eq!(parse_dshow_devices(new), ["Integrated Camera", "OBS Virtual Camera"]);
+        // 舊版格式（分段標題）
+        let old = r#"[dshow @ 0] DirectShow video devices (some may be both video and audio devices)
+[dshow @ 0]  "USB Camera"
+[dshow @ 0]     Alternative name "@device_pnp_x"
+[dshow @ 0] DirectShow audio devices
+[dshow @ 0]  "Mic""#;
+        assert_eq!(parse_dshow_devices(old), ["USB Camera"]);
     }
 }

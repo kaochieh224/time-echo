@@ -4,7 +4,6 @@
 //! 常見誤差是差兩倍或一半，所以介面另有 ×2／÷2 與 Tap tempo。
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
@@ -14,12 +13,12 @@ pub const CHANNELS: u16 = 2;
 
 /// 解碼成交錯的 f32 立體聲 PCM。
 pub fn decode(path: &Path) -> Result<Vec<f32>> {
-    let out = Command::new(crate::source::ffmpeg_bin())
+    let out = crate::source::command(crate::source::ffmpeg_bin())
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(path)
         .args(["-vn", "-f", "f32le", "-acodec", "pcm_f32le", "-ac", &CHANNELS.to_string(), "-ar", &RATE.to_string(), "-"])
         .output()
-        .context("找不到 ffmpeg（請先安裝：brew install ffmpeg）")?;
+        .context(crate::source::FFMPEG_HINT)?;
     if !out.status.success() {
         bail!("讀不了這個音訊檔：{}", String::from_utf8_lossy(&out.stderr).trim());
     }

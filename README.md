@@ -11,6 +11,14 @@
 | 人物分割 | ort（ONNX Runtime）＋ Robust Video Matting 模型 |
 | 錄影 | ffmpeg 編碼成 H.264 MP4 |
 
+## Windows：下載就能用
+
+到 GitHub 的 [Releases](https://github.com/kaochieh224/time-echo/releases) 下載 `time-echo-windows-x64.zip`，解壓後雙擊 `time-echo.exe`。zip 裡已附 ffmpeg、ONNX Runtime 與 VC++ runtime，不必另外安裝。AI 模型第一次使用時在 01 欄按「下載 AI 模型」。詳細說明在 zip 內的 `README-Windows.txt`（原稿在 `packaging/windows/`）。
+
+這個 zip 由 GitHub Actions（`.github/workflows/windows.yml`）在 Windows 主機上編譯、打包，並實際跑一次離線算圖（Luma 與 AI 各 30 張）確認 ffmpeg、GPU、ONNX Runtime 都能用。每次推到 main 都會產生一份（Actions 頁面的 artifact）；推 `v*` 標籤時另外發布到 Release。
+
+自己在 Windows 編譯：裝 Rust（MSVC 工具鏈）與 NASM 後 `cargo build --release`，再把 `ffmpeg.exe`、`ffprobe.exe` 放進執行檔旁的 `ffmpeg\`、`onnxruntime.dll` 放在執行檔旁。
+
 ## macOS 建置與執行
 
 需要：Apple Silicon 或 Intel Mac、Homebrew。

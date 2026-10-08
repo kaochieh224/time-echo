@@ -1,0 +1,102 @@
+# Windows x64 版：編譯、附上 ffmpeg 與 ONNX Runtime 打包成 zip。
+# 推 v* 標籤時另外發布到 GitHub Release；其他時候只留 Actions 的 artifact。
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ORT_VERSION: "1.22.0"
+  FFMPEG_ZIP: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+  MODEL_URL: https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx
+  CARGO_TERM_COLOR: always
+  # 靜態連結 C runtime，time-echo.exe 不需要另裝 VC++ 可轉散發套件
+  RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # nokhwa 的 MJPEG 解碼（mozjpeg）需要 NASM
+      - uses: ilammy/setup-nasm@v1
+
+      - name: Unit tests
+        run: cargo test --release --lib --bins
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Fetch ffmpeg and ONNX Runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deps | Out-Null
+          Invoke-WebRequest $env:FFMPEG_ZIP -OutFile deps/ffmpeg.zip
+          Expand-Archive deps/ffmpeg.zip deps/ffmpeg
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/onnxruntime-win-x64-$env:ORT_VERSION.zip" -OutFile deps/ort.zip
+          Expand-Archive deps/ort.zip deps/ort
+
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          $dst = "dist/time-echo-windows-x64"
+          New-Item -ItemType Directory -Force "$dst/ffmpeg", "$dst/models", "$dst/presets", "$dst/licenses" | Out-Null
+          Copy-Item target/release/time-echo.exe $dst
+          $ffbin = Get-ChildItem deps/ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $ffbin.FullName, (Join-Path $ffbin.DirectoryName ffprobe.exe) "$dst/ffmpeg"
+          $ort = Get-ChildItem deps/ort -Recurse -Filter onnxruntime.dll | Select-Object -First 1
+          Copy-Item $ort.FullName $dst
+          # ONNX Runtime 動態連結 VC++ runtime；新灌的 Windows 可能沒有，附上（微軟允許與程式一起散發）
+          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            Copy-Item "C:/Windows/System32/$dll" $dst
+          }
+          Copy-Item presets/*.json "$dst/presets"
+          Copy-Item packaging/windows/README-Windows.txt, packaging/windows/download-model.bat $dst
+          Copy-Item packaging/windows/models-README.txt "$dst/models/README.txt"
+          $ortLicense = Get-ChildItem deps/ort -Recurse -Filter LICENSE | Select-Object -First 1
+          Copy-Item $ortLicense.FullName "$dst/licenses/onnxruntime-LICENSE.txt"
+          $ffLicense = Get-ChildItem deps/ffmpeg -Recurse -Filter LICENSE.txt | Select-Object -First 1
+          if ($ffLicense) { Copy-Item $ffLicense.FullName "$dst/licenses/ffmpeg-LICENSE.txt" }
+          Get-ChildItem -Recurse $dst | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Smoke test (bundled ffmpeg, GPU, ONNX Runtime)
+        shell: pwsh
+        run: |
+          $dir = "dist/time-echo-windows-x64"
+          & "$dir/ffmpeg/ffmpeg.exe" -hide_banner -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=30:duration=2" -pix_fmt yuv420p smoke-in.mp4
+          # 從暫存資料夾執行，確認只靠執行檔旁的檔案就找得到 ffmpeg 與 onnxruntime.dll
+          Push-Location $env:RUNNER_TEMP
+          $exe = Resolve-Path "$env:GITHUB_WORKSPACE/$dir/time-echo.exe"
+          $p = Start-Process $exe -ArgumentList "render", "-i", "$env:GITHUB_WORKSPACE/smoke-in.mp4", "-o", "$env:RUNNER_TEMP/smoke-luma.mp4", "--demo", "--matte", "luma", "--frames", "30" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "luma render failed: $($p.ExitCode)" }
+          Invoke-WebRequest $env:MODEL_URL -OutFile "$env:RUNNER_TEMP/rvm.onnx"
+          $p = Start-Process $exe -ArgumentList "render", "-i", "$env:GITHUB_WORKSPACE/smoke-in.mp4", "-o", "$env:RUNNER_TEMP/smoke-ai.mp4", "--demo", "--matte", "ai", "--model", "$env:RUNNER_TEMP/rvm.onnx", "--frames", "30" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "AI render failed: $($p.ExitCode)" }
+          Pop-Location
+          Get-Item "$env:RUNNER_TEMP/smoke-*.mp4" | Format-Table Name, Length
+
+      - name: Zip
+        shell: pwsh
+        run: 7z a -tzip dist/time-echo-windows-x64.zip ./dist/time-echo-windows-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: time-echo-windows-x64
+          path: dist/time-echo-windows-x64.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/time-echo-windows-x64.zip
+          body: |
+            Windows x64 版：下載 time-echo-windows-x64.zip，解壓後雙擊 time-echo.exe。
+            第一次使用 AI 人物分割時，按 01 欄的「下載 AI 模型」（約 15 MB）。說明見 zip 內的 README-Windows.txt。

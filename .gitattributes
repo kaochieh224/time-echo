@@ -1,0 +1,2 @@
+*.bat text eol=crlf
+packaging/windows/*.txt text eol=crlf

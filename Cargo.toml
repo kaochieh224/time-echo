@@ -26,6 +26,9 @@ rodio = { version = "0.22", default-features = false, features = ["playback"], o
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"], optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [profile.dev]
 opt-level = 1
 

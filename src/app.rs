@@ -106,6 +106,8 @@ pub struct TimeEchoApp {
     camera_index: u32,
     ffmpeg_camera: String,
     model_name: Option<String>,
+    /// 背景下載模型的結果
+    model_dl: Option<std::sync::mpsc::Receiver<anyhow::Result<PathBuf>>>,
     track: Option<Track>,
     pick: Pick,
 }
@@ -132,7 +134,7 @@ impl TimeEchoApp {
                 Some(m) => seg.load_model(m),
                 None => {
                     message = format!(
-                        "找不到 AI 分割模型（models/{}）。先執行 scripts/setup_macos.sh，或改用 Keylight／Luma 遮罩。",
+                        "找不到 AI 分割模型（models/{}）。按 01 的「下載 AI 模型」，或改用 Keylight／Luma 遮罩。",
                         segment::DEFAULT_MODEL_FILE
                     )
                 }
@@ -160,6 +162,7 @@ impl TimeEchoApp {
             camera_index: 0,
             ffmpeg_camera: "0".into(),
             model_name: None,
+            model_dl: None,
             track: None,
             pick: Pick::None,
         };
@@ -256,8 +259,11 @@ impl TimeEchoApp {
             self.message = "還沒有畫面可以錄".into();
             return;
         };
+        // macOS「影片」= ~/Movies，Windows「影片」= %USERPROFILE%\Videos
         let dir = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("Movies"))
+            .filter(|d| d.is_dir())
+            .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Videos")))
             .filter(|d| d.is_dir())
             .unwrap_or_else(|| PathBuf::from("."));
         let path = dir.join(record::timestamp_name());
@@ -413,6 +419,7 @@ impl eframe::App for TimeEchoApp {
         self.handle_keys(ui);
         self.step_pipeline();
         self.sync_textures();
+        self.poll_model_download();
         let (status, model, ai_fps) = self.seg.status();
         self.model_name = model;
         let pal = self.theme.palette();
@@ -675,6 +682,13 @@ impl TimeEchoApp {
             None => "AI 模型未載入".into(),
         };
         ui.label(RichText::new(ready).small().color(pal.muted));
+        if self.model_name.is_none() {
+            if self.model_dl.is_some() {
+                ui.label(RichText::new("下載 AI 模型中（約 15 MB）…").small().color(pal.accent));
+            } else if ui.button("[ 下載 AI 模型 ]").clicked() {
+                action = Some("download");
+            }
+        }
         ui.horizontal(|ui| {
             if ui.small_button("選擇模型…").clicked() {
                 action = Some("model");
@@ -721,6 +735,14 @@ impl TimeEchoApp {
                     }
                 }
             }
+            Some("download") => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(segment::download_model());
+                });
+                self.model_dl = Some(rx);
+                self.message = "下載 AI 模型中…".into();
+            }
             Some("model") => {
                 if let Some(path) = rfd::FileDialog::new().add_filter("ONNX 模型", &["onnx"]).pick_file() {
                     self.seg.load_model(path);
@@ -728,6 +750,24 @@ impl TimeEchoApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn poll_model_download(&mut self) {
+        let Some(rx) = &self.model_dl else { return };
+        match rx.try_recv() {
+            Ok(Ok(path)) => {
+                self.message = format!("模型已下載：{}", path.display());
+                self.seg.load_model(path);
+                self.p.matte_source = MatteSource::Ai;
+                self.model_dl = None;
+            }
+            Ok(Err(e)) => {
+                self.message = format!("{e:#}");
+                self.model_dl = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.model_dl = None,
         }
     }
 
@@ -1105,6 +1145,9 @@ fn find_cjk_font() -> Option<(PathBuf, Vec<u8>)> {
             "/System/Library/Fonts/STHeiti Medium.ttc",
             "/System/Library/Fonts/STHeiti Light.ttc",
             "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "C:\\Windows\\Fonts\\msjh.ttc",
+            "C:\\Windows\\Fonts\\msjh.ttf",
+            "C:\\Windows\\Fonts\\mingliu.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",

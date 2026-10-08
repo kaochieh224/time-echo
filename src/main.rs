@@ -9,6 +9,9 @@
 //!     --frames N                    只算前 N 張
 //!     --mirror                      左右鏡像（影片預設不鏡像）
 
+// Windows 發行版雙擊開啟時不要多跳一個主控台視窗
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -16,6 +19,9 @@ use time_echo::params::{MatteSource, Params};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        attach_console();
+    }
     if args.first().map(String::as_str) == Some("render") {
         return render(&args[1..]);
     }
@@ -34,7 +40,22 @@ fn main() -> Result<()> {
             other => bail!("不認得的參數：{other}"),
         }
     }
-    time_echo::app::run(time_echo::app::StartOptions { video, params }).map_err(|e| anyhow!("{e}"))
+    let result = time_echo::app::run(time_echo::app::StartOptions { video, params }).map_err(|e| anyhow!("{e}"));
+    if let Err(e) = &result {
+        // 雙擊開啟時看不到主控台，用對話框告訴使用者為什麼開不起來
+        if cfg!(windows) {
+            rfd::MessageDialog::new().set_level(rfd::MessageLevel::Error).set_title("time-echo 無法啟動").set_description(format!("{e:#}")).show();
+        }
+    }
+    result
+}
+
+/// Windows 視窗程式沒有主控台；從命令列執行（render、--help）時接回父程序的主控台，訊息才看得到。
+fn attach_console() {
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
+    }
 }
 
 fn load_preset(path: Option<&String>) -> Result<Params> {

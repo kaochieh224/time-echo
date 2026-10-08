@@ -39,19 +39,56 @@ pub fn find_model() -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(DEFAULT_MODEL_FILE)).find(|p| p.exists())
 }
 
-/// 找 ONNX Runtime 動態函式庫：ORT_DYLIB_PATH → Homebrew → ./lib。
+/// 找 ONNX Runtime 動態函式庫：ORT_DYLIB_PATH → 執行檔旁 → Homebrew／./lib。
+/// Windows 一定要用絕對路徑：只給檔名會先載到 System32 裡系統附帶的舊版 onnxruntime.dll。
 pub fn find_ort_library() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from) {
         return Some(p);
     }
-    let names: &[&str] = if cfg!(target_os = "macos") {
-        &["/opt/homebrew/lib/libonnxruntime.dylib", "/usr/local/lib/libonnxruntime.dylib", "lib/libonnxruntime.dylib"]
+    let file = if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
     } else if cfg!(target_os = "windows") {
-        &["lib/onnxruntime.dll", "onnxruntime.dll"]
+        "onnxruntime.dll"
     } else {
-        &["lib/libonnxruntime.so", "/usr/local/lib/libonnxruntime.so", "/usr/lib/libonnxruntime.so"]
+        "libonnxruntime.so"
     };
-    names.iter().map(PathBuf::from).find(|p| p.exists())
+    let mut candidates = Vec::new();
+    if let Some(d) = crate::source::exe_dir() {
+        candidates.push(d.join(file));
+        candidates.push(d.join("lib").join(file));
+    }
+    candidates.push(PathBuf::from("lib").join(file));
+    if cfg!(target_os = "macos") {
+        candidates.extend(["/opt/homebrew/lib", "/usr/local/lib"].map(|d| Path::new(d).join(file)));
+    } else if cfg!(target_os = "linux") {
+        candidates.extend(["/usr/local/lib", "/usr/lib"].map(|d| Path::new(d).join(file)));
+    }
+    candidates.into_iter().find(|p| p.exists()).and_then(|p| std::path::absolute(p).ok())
+}
+
+/// 分割模型的下載網址（Robust Video Matting 官方 release，約 15 MB）
+pub const MODEL_URL: &str = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx";
+
+/// 用系統內建的 curl（macOS、Windows 10 以後都有）下載模型到執行檔旁的 models/，
+/// 那裡寫不進去就放 ./models。阻塞，請在背景執行緒呼叫。
+pub fn download_model() -> Result<PathBuf> {
+    use anyhow::{Context, bail};
+    let dirs: Vec<PathBuf> = crate::source::exe_dir().map(|d| d.join("models")).into_iter().chain([PathBuf::from("models")]).collect();
+    let dir = dirs.into_iter().find(|d| std::fs::create_dir_all(d).is_ok()).context("沒有可寫入的 models 資料夾")?;
+    let dest = dir.join(DEFAULT_MODEL_FILE);
+    let part = dir.join(format!("{DEFAULT_MODEL_FILE}.part"));
+    let out = crate::source::command("curl")
+        .args(["-L", "--fail", "--silent", "--show-error", "-o"])
+        .arg(&part)
+        .arg(MODEL_URL)
+        .output()
+        .context("找不到 curl，請用瀏覽器下載模型")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&part);
+        bail!("下載失敗：{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    std::fs::rename(&part, &dest).context("無法存檔")?;
+    Ok(dest)
 }
 
 pub fn ai_available() -> bool {
@@ -138,7 +175,11 @@ mod onnx {
         ORT_INIT
             .get_or_init(|| {
                 let lib = find_ort_library().ok_or_else(|| {
-                    "找不到 ONNX Runtime 函式庫：請 brew install onnxruntime，或設定 ORT_DYLIB_PATH".to_string()
+                    if cfg!(target_os = "windows") {
+                        "找不到 ONNX Runtime：onnxruntime.dll 要放在 time-echo.exe 旁".to_string()
+                    } else {
+                        "找不到 ONNX Runtime 函式庫：請 brew install onnxruntime，或設定 ORT_DYLIB_PATH".to_string()
+                    }
                 })?;
                 ort::init_from(&lib).map_err(|e| format!("載入 {} 失敗：{e}", lib.display()))?.with_name("time-echo").commit();
                 Ok(())
