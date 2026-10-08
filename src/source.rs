@@ -48,6 +48,7 @@ fn find_tool(name: &str) -> PathBuf {
 
 #[derive(Clone, Debug)]
 pub struct VideoInfo {
+    pub codec: String,
     pub width: u32,
     pub height: u32,
     pub fps: f32,
@@ -58,7 +59,7 @@ pub struct VideoInfo {
 pub fn probe(path: &Path) -> Result<VideoInfo> {
     let out = Command::new(ffprobe_bin())
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
-        .arg("stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:stream_side_data=rotation:stream_tags=rotate")
+        .arg("stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames:stream_side_data=rotation:stream_tags=rotate")
         .args(["-of", "default=noprint_wrappers=1"])
         .arg(path)
         .output()
@@ -79,7 +80,8 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
     let rotation: i32 = get("rotation").or_else(|| get("TAG:rotate")).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) as i32;
     let (w, h) = if rotation.rem_euclid(180) == 90 { (h, w) } else { (w, h) };
     let frames = get("nb_frames").and_then(|v| v.parse().ok());
-    Ok(VideoInfo { width: w, height: h, fps, frames })
+    let codec = get("codec_name").unwrap_or_default().to_string();
+    Ok(VideoInfo { codec, width: w, height: h, fps, frames })
 }
 
 /// 解碼後的尺寸：長邊不超過 `max_edge`，寬高為偶數。
@@ -166,6 +168,12 @@ impl VideoSource {
         let mut args: Vec<String> = Vec::new();
         if looping {
             args.extend(["-stream_loop".into(), "-1".into()]);
+        }
+        // VP8／VP9 的 alpha 只有 libvpx 解碼器讀得到（MOV / video has alpha 用）
+        match info.codec.as_str() {
+            "vp9" => args.extend(["-c:v".into(), "libvpx-vp9".into()]),
+            "vp8" => args.extend(["-c:v".into(), "libvpx".into()]),
+            _ => {}
         }
         args.extend(["-an".into(), "-i".into(), path.to_string_lossy().into_owned()]);
         let pipe = FfmpegPipe::spawn(&args, w, h, 3)?;

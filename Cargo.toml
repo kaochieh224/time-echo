@@ -6,7 +6,9 @@ description = "時間分身特效控制器原型（TIME & MEMORY 風格）"
 default-run = "time-echo"
 
 [features]
-default = ["camera", "seg"]
+default = ["camera", "seg", "audio"]
+# 音樂播放（節拍同步）
+audio = ["dep:rodio"]
 # 攝影機輸入（macOS 走 AVFoundation）
 camera = ["dep:nokhwa"]
 # AI 人物分割（ONNX Runtime，執行時動態載入 libonnxruntime）
@@ -20,6 +22,7 @@ serde_json = "1"
 anyhow = "1"
 pollster = "0.4"
 rfd = "0.15"
+rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"], optional = true }
 

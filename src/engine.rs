@@ -90,7 +90,7 @@ impl Engine {
         if self.capture_acc >= period {
             self.capture_acc = (self.capture_acc - period).min(period);
             let layer = self.ring.push();
-            self.renderer.capture(layer, p.mirror);
+            self.renderer.capture(layer, p);
             self.captured_total += 1;
         }
     }

@@ -11,7 +11,7 @@ use crate::engine::Engine;
 use crate::params::{MatteSource, Params};
 use crate::record::Recorder;
 use crate::render::Renderer;
-use crate::segment::{self, LumaSegmenter, Segmenter};
+use crate::segment::{self, Segmenter};
 use crate::source::VideoSource;
 
 pub struct RenderOptions {
@@ -57,16 +57,23 @@ pub fn run(opts: RenderOptions, mut progress: impl FnMut(u64)) -> Result<RenderS
     let mut engine = Engine::new(Renderer::new(device, queue), &p);
 
     let mut seg: Option<Box<dyn Segmenter>> = match p.matte_source {
-        MatteSource::Ai => {
+        _ if p.video_alpha => None,
+        MatteSource::Ai | MatteSource::AiKey => {
             let model = opts.model.or_else(segment::find_model).ok_or_else(|| {
                 anyhow!("找不到分割模型：請放在 models/{}，或用 --model 指定", segment::DEFAULT_MODEL_FILE)
             })?;
             Some(segment::open_ai(&model)?)
         }
-        MatteSource::Luma => Some(Box::new(LumaSegmenter)),
-        MatteSource::Full => None,
+        _ => None,
     };
-    let segmenter = seg.as_ref().map(|s| s.name()).unwrap_or_else(|| "全畫面".into());
+    let segmenter = match (p.video_alpha, p.matte_source, seg.as_ref()) {
+        (true, ..) => "影片 alpha".into(),
+        (_, MatteSource::AiKey, Some(s)) => format!("{} × 色鍵", s.name()),
+        (_, _, Some(s)) => s.name(),
+        (_, MatteSource::Key, _) => "色鍵".into(),
+        (_, MatteSource::Luma, _) => "亮度".into(),
+        _ => "全畫面".into(),
+    };
 
     let mut recorder: Option<Recorder> = None;
     let mut frames = 0u64;
@@ -75,15 +82,10 @@ pub fn run(opts: RenderOptions, mut progress: impl FnMut(u64)) -> Result<RenderS
             break;
         }
         let (bw, bh) = engine.buffer_dims(frame.width, frame.height);
-        let mask = match seg.as_mut() {
-            Some(s) => {
-                let mut m = s.segment(&frame, bw, bh)?;
-                crate::matte::refine(&mut m, p.shrink_grow, p.edge_softness, 1.0);
-                Some(m)
-            }
-            None => Some(crate::frame::Mask::filled(1, 1, 1.0)),
-        };
-        engine.push_frame(&p, &frame, mask.as_ref(), 1.0 / fps);
+        let job = segment::SegJob::from_params(std::sync::Arc::new(frame), bw, bh, &p);
+        let mask = segment::build_mask(seg.as_deref_mut(), &job)?;
+        let frame = &job.frame;
+        engine.push_frame(&p, frame, Some(&mask), 1.0 / fps);
         let (w, h) = engine.render(&p, frames as f64 / fps as f64, false);
         let out = engine.renderer.read_output().context("讀回輸出失敗")?;
         if recorder.is_none() {

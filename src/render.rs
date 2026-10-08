@@ -8,7 +8,7 @@ use wgpu::util::DeviceExt;
 
 use crate::frame::{Frame, Mask};
 use crate::memory::EchoInstance;
-use crate::params::{BgMode, ColourMode, Params, Surface};
+use crate::params::{BgMode, ColourMode, MatteSource, Params, Surface};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const BLOOM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -29,6 +29,9 @@ struct Globals {
     custom: [f32; 4],
     duo_dark: [f32; 4],
     duo_light: [f32; 4],
+    extra: [f32; 4],
+    sel: [f32; 4],
+    sel2: [f32; 4],
 }
 
 #[repr(C)]
@@ -134,6 +137,7 @@ pub struct Renderer {
     p_final: wgpu::RenderPipeline,
     p_monitor: wgpu::RenderPipeline,
     p_composite: wgpu::RenderPipeline,
+    p_shadow: wgpu::RenderPipeline,
     slots: Vec<wgpu::Buffer>,
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -247,35 +251,39 @@ impl Renderer {
             bind_group_layouts: &[Some(&composite_layout)],
             immediate_size: 0,
         });
-        let p_composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("composite"),
-            layout: Some(&comp_pl),
-            vertex: wgpu::VertexState {
-                module: &comp_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<GpuInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Uint32, 2 => Float32, 3 => Float32, 4 => Float32],
-                })],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &comp_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let comp_pipeline = |label: &str, vs: &str, fs: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&comp_pl),
+                vertex: wgpu::VertexState {
+                    module: &comp_shader,
+                    entry_point: Some(vs),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<GpuInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Uint32, 2 => Float32, 3 => Float32, 4 => Float32],
+                    })],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &comp_shader,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let p_composite = comp_pipeline("composite", "vs_main", "fs_main");
+        let p_shadow = comp_pipeline("ground shadow", "vs_shadow", "fs_shadow");
 
         let slots = (0..SLOT_COUNT)
             .map(|_| {
@@ -319,6 +327,7 @@ impl Renderer {
             p_final,
             p_monitor,
             p_composite,
+            p_shadow,
             slots,
             globals,
             instances,
@@ -440,9 +449,17 @@ impl Renderer {
     }
 
     /// 把目前的來源影格＋遮罩寫進記憶緩衝第 `layer` 層。
-    pub fn capture(&mut self, layer: usize, mirror: bool) {
+    pub fn capture(&mut self, layer: usize, p: &Params) {
         let Some(mem) = &self.memory else { return };
-        let u = PostUniform { c: [mirror as u32 as f32, 0.0, 0.0, 0.0], ..Default::default() };
+        let screen = p.screen_colour.to_f32();
+        // Despill 只在用到色鍵時生效
+        let keyed = matches!(p.matte_source, MatteSource::Key | MatteSource::AiKey) && !p.video_alpha;
+        let despill = if keyed { p.despill / 100.0 } else { 0.0 };
+        let u = PostUniform {
+            a: [screen[0], screen[1], screen[2], 0.0],
+            b: [despill, crate::key::is_neutral(screen) as u32 as f32, 0.0, 0.0],
+            c: [p.mirror as u32 as f32, 0.0, 0.0, 0.0],
+        };
         let bg = self.post_bind_group(Slot::Capture, u, &self.src.view, &self.mask.view, &self.mask.view);
         let mut enc = self.device.create_command_encoder(&Default::default());
         Self::fullscreen(&mut enc, &self.p_capture, &bg, &mem.layer_views[layer]);
@@ -494,12 +511,17 @@ impl Renderer {
         }
 
         let rgba = |c: [f32; 3]| [c[0], c[1], c[2], 1.0];
+        let mem_texel = self.memory.as_ref().map(|m| [1.0 / m.width as f32, 1.0 / m.height as f32]).unwrap_or([0.0, 0.0]);
         let globals = Globals {
             out_size: [req.out_width as f32, req.out_height as f32],
             clip: [p.clip_black / 100.0, p.clip_white / 100.0],
             grade: [p.brightness / 100.0, p.contrast / 100.0, p.saturation / 100.0, NOISE_SCALE],
             modes: [
-                matches!(p.surface, Surface::Solid) as u32 as f32,
+                match p.surface {
+                    Surface::Textured => 0.0,
+                    Surface::Solid => 1.0,
+                    Surface::Contour => 2.0,
+                },
                 match p.colour_mode {
                     ColourMode::Original => 0.0,
                     ColourMode::White => 1.0,
@@ -512,6 +534,14 @@ impl Renderer {
             custom: rgba(p.custom_colour.to_f32()),
             duo_dark: rgba(p.duotone_dark.to_f32()),
             duo_light: rgba(p.duotone_light.to_f32()),
+            extra: [mem_texel[0], mem_texel[1], p.shadow_opacity / 100.0, 0.0],
+            sel: [
+                p.selective as u32 as f32,
+                hue_of(p.selective_colour.to_f32()),
+                p.selective_tolerance / 360.0,
+                p.selective_hue / 360.0,
+            ],
+            sel2: [p.selective_sat / 100.0, p.selective_light / 100.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
@@ -560,9 +590,13 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.p_composite);
             pass.set_bind_group(0, &cbg, &[]);
             pass.set_vertex_buffer(0, self.instances.slice(..));
+            if p.ground_shadows {
+                pass.set_pipeline(&self.p_shadow);
+                pass.draw(0..6, 0..inst.len() as u32);
+            }
+            pass.set_pipeline(&self.p_composite);
             pass.draw(0..6, 0..inst.len() as u32);
         }
 
@@ -656,5 +690,34 @@ impl Renderer {
         drop(data);
         buf.unmap();
         Some(Frame::new(w, h, rgba))
+    }
+}
+
+/// 0–1 的色相
+pub fn hue_of(c: [f32; 3]) -> f32 {
+    let (r, g, b) = (c[0], c[1], c[2]);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    if d < 1e-6 {
+        return 0.0;
+    }
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    h / 6.0
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hue() {
+        assert_eq!(super::hue_of([1.0, 0.0, 0.0]), 0.0);
+        assert!((super::hue_of([0.0, 1.0, 0.0]) - 1.0 / 3.0).abs() < 1e-6);
+        assert!((super::hue_of([0.0, 0.0, 1.0]) - 2.0 / 3.0).abs() < 1e-6);
     }
 }

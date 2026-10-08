@@ -138,6 +138,11 @@ pub fn plan_echoes(
         let cx = match p.layout {
             Layout::Procession => anchor - i as f32 * step,
             Layout::Centered => anchor + ((n - 1) as f32 * 0.5 - i as f32) * step,
+            // 間距以整排寬度的一半計，左右各一半
+            Layout::Symmetric => {
+                let k = i.div_ceil(2) as f32 * 2.0;
+                if i % 2 == 1 { anchor - k * step * 0.5 } else { anchor + k * step * 0.5 }
+            }
         };
         plan.instances.push(EchoInstance {
             rect: [cx - fw * 0.5, out_h - fh, cx + fw * 0.5, out_h],
@@ -251,6 +256,22 @@ mod tests {
         assert!(rects.windows(2).all(|w| w[0] == w[1]));
         let layers: Vec<_> = plan.instances.iter().map(|e| e.layer).collect();
         assert!(layers.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn symmetric_alternates_sides() {
+        let p = Params { echo_count: 5, spacing: 100.0, layout: Layout::Symmetric, ..Params::default() };
+        let mut ring = EchoRing::new(120);
+        for _ in 0..120 {
+            ring.push();
+        }
+        let plan = plan_echoes(&p, &ring, 1200.0, 600.0, 640.0, 360.0, 0.0);
+        let cx: Vec<(u32, f32)> = plan.instances.iter().map(|e| (e.index, (e.rect[0] + e.rect[2]) * 0.5)).collect();
+        let at = |i: u32| cx.iter().find(|c| c.0 == i).unwrap().1;
+        assert_eq!(at(0), 600.0);
+        assert!(at(1) < 600.0 && at(2) > 600.0);
+        assert!((at(1) - 600.0 + (at(2) - 600.0)).abs() < 1e-3, "左右對稱");
+        assert!(at(3) < at(1) && at(4) > at(2));
     }
 
     #[test]

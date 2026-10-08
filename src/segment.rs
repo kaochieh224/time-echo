@@ -275,10 +275,62 @@ pub struct SegJob {
     pub width: u32,
     pub height: u32,
     pub source: MatteSource,
+    /// MOV / video has alpha：優先用影片 alpha
+    pub video_alpha: bool,
+    pub screen: [f32; 3],
+    /// 0–2
+    pub screen_gain: f32,
+    /// 0–1
+    pub screen_balance: f32,
     pub shrink_grow: f32,
     pub softness: f32,
     /// 遮罩寬 ÷ 緩衝寬（px 換算）
     pub px_scale: f32,
+}
+
+impl SegJob {
+    pub fn from_params(frame: Arc<Frame>, width: u32, height: u32, p: &crate::params::Params) -> Self {
+        SegJob {
+            frame,
+            width,
+            height,
+            source: p.matte_source,
+            video_alpha: p.video_alpha,
+            screen: p.screen_colour.to_f32(),
+            screen_gain: p.screen_gain / 100.0,
+            screen_balance: p.screen_balance / 100.0,
+            shrink_grow: p.shrink_grow,
+            softness: p.edge_softness,
+            px_scale: 1.0,
+        }
+    }
+}
+
+/// 依遮罩來源算出整理好的遮罩。`ai` 為 None（模型未載入）時 AI 部分當成全畫面。
+pub fn build_mask(ai: Option<&mut (dyn Segmenter + 'static)>, job: &SegJob) -> Result<Mask> {
+    let (w, h) = (job.width, job.height);
+    let key = || crate::key::key_mask(&job.frame, w, h, job.screen, job.screen_gain, job.screen_balance);
+    let ai_mask = |ai: Option<&mut (dyn Segmenter + 'static)>| match ai {
+        Some(s) => s.segment(&job.frame, w, h),
+        None => Ok(Mask::filled(w, h, 1.0)),
+    };
+    let mut mask = if job.video_alpha {
+        crate::key::alpha_mask(&job.frame, w, h)
+    } else {
+        match job.source {
+            MatteSource::Ai => ai_mask(ai)?,
+            MatteSource::Key => key(),
+            MatteSource::AiKey => {
+                let mut m = ai_mask(ai)?;
+                crate::key::multiply(&mut m, &key());
+                m
+            }
+            MatteSource::Luma => Mask::from_luma(&job.frame, w, h),
+            MatteSource::Full => Mask::filled(w, h, 1.0),
+        }
+    };
+    matte::refine(&mut mask, job.shrink_grow, job.softness, job.px_scale);
+    Ok(mask)
 }
 
 #[derive(Default)]
@@ -353,7 +405,6 @@ impl Drop for SegWorker {
 fn worker_loop(shared: Arc<(Mutex<Shared>, Condvar)>) {
     let (m, cv) = &*shared;
     let mut ai: Option<Box<dyn Segmenter>> = None;
-    let mut luma = LumaSegmenter;
     let mut seq = 0u64;
     let mut last_done: Option<Instant> = None;
     let mut fps = 0.0f32;
@@ -391,19 +442,10 @@ fn worker_loop(shared: Arc<(Mutex<Shared>, Condvar)>) {
             }
         }
         let Some(job) = job else { continue };
-        let seg: Option<&mut dyn Segmenter> = match job.source {
-            MatteSource::Ai => ai.as_deref_mut(),
-            MatteSource::Luma => Some(&mut luma),
-            MatteSource::Full => None,
-        };
-        let mask = match seg {
-            Some(seg) => seg.segment(&job.frame, job.width, job.height),
-            // 全畫面，或 AI 模型還沒載入：整張當成人物，畫面至少看得到分身
-            None => Ok(Mask::filled(job.width, job.height, 1.0)),
-        };
+        let needs_ai = !job.video_alpha && matches!(job.source, MatteSource::Ai | MatteSource::AiKey);
+        let mask = build_mask(if needs_ai { ai.as_deref_mut() } else { None }, &job);
         match mask {
-            Ok(mut mask) => {
-                matte::refine(&mut mask, job.shrink_grow, job.softness, job.px_scale);
+            Ok(mask) => {
                 let now = Instant::now();
                 if let Some(t) = last_done {
                     let inst = 1.0 / now.duration_since(t).as_secs_f32().max(1e-3);
@@ -439,7 +481,8 @@ mod tests {
     fn worker_produces_luma_mask() {
         let mut w = SegWorker::spawn();
         let frame = Arc::new(Frame::new(2, 2, vec![255; 16]));
-        w.submit(SegJob { frame, width: 4, height: 4, source: MatteSource::Luma, shrink_grow: 0.0, softness: 0.0, px_scale: 1.0 });
+        let p = crate::params::Params { matte_source: MatteSource::Luma, edge_softness: 0.0, ..Default::default() };
+        w.submit(SegJob::from_params(frame, 4, 4, &p));
         let t = Instant::now();
         loop {
             if let Some(m) = w.take_new() {

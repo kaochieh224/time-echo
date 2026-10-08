@@ -46,6 +46,10 @@ impl<'de> Deserialize<'de> for Rgb {
 pub enum MatteSource {
     /// AI 人物分割（ONNX 模型）
     Ai,
+    /// 05 Keylight 色鍵
+    Key,
+    /// AI 遮罩 × 色鍵遮罩
+    AiKey,
     /// 以亮度當遮罩：適合黑底舞蹈影片，配合 Clip black／white 調門檻
     Luma,
     /// 不去背，整張畫面當成分身
@@ -59,13 +63,19 @@ pub enum Layout {
     Procession,
     /// 整排的中心在 Axis X
     Centered,
+    /// 最新在 Axis X，舊的左右交替展開
+    Symmetric,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Surface {
+    /// Textured video echoes
     Textured,
+    /// Delayed solid：實心剪影
     Solid,
+    /// Contour：只留輪廓線
+    Contour,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +104,8 @@ pub struct Params {
     // ── 01 來源 ──
     pub mirror: bool,
     pub matte_source: MatteSource,
+    /// MOV / video has alpha：用影片自帶的透明通道，略過 AI 與色鍵
+    pub video_alpha: bool,
     pub monitors: bool,
     /// 緩衝長邊 px：480／640／960
     pub buffer_res: u32,
@@ -119,6 +131,8 @@ pub struct Params {
     pub custom_colour: Rgb,
     pub bg_mode: BgMode,
     pub bg_colour: Rgb,
+    pub ground_shadows: bool,
+    pub shadow_opacity: f32,
 
     // ── 04 調色 ──
     pub brightness: f32,
@@ -130,8 +144,21 @@ pub struct Params {
     pub duotone: bool,
     pub duotone_dark: Rgb,
     pub duotone_light: Rgb,
+    /// Selective colour：只調整接近取樣色相的部分
+    pub selective: bool,
+    pub selective_colour: Rgb,
+    /// 色相容差（度）
+    pub selective_tolerance: f32,
+    /// 色相位移（度）
+    pub selective_hue: f32,
+    pub selective_sat: f32,
+    pub selective_light: f32,
 
-    // ── 05 遮罩 ──
+    // ── 05 Keylight ──
+    pub screen_colour: Rgb,
+    pub screen_gain: f32,
+    pub screen_balance: f32,
+    pub despill: f32,
     pub clip_black: f32,
     pub clip_white: f32,
     pub shrink_grow: f32,
@@ -151,6 +178,7 @@ impl Default for Params {
             output_res: 1280,
             mirror: true,
             matte_source: MatteSource::Ai,
+            video_alpha: false,
             monitors: true,
             buffer_res: 640,
             capture_rate: 15.0,
@@ -169,6 +197,8 @@ impl Default for Params {
             custom_colour: Rgb::hex(0xFFFFFF),
             bg_mode: BgMode::Solid,
             bg_colour: Rgb::hex(0x000000),
+            ground_shadows: false,
+            shadow_opacity: 50.0,
             brightness: 0.0,
             contrast: 100.0,
             saturation: 100.0,
@@ -178,6 +208,16 @@ impl Default for Params {
             duotone: false,
             duotone_dark: Rgb::hex(0x1A1AFF),
             duotone_light: Rgb::hex(0xFF000C),
+            selective: false,
+            selective_colour: Rgb::hex(0xFF000C),
+            selective_tolerance: 30.0,
+            selective_hue: 0.0,
+            selective_sat: 0.0,
+            selective_light: 0.0,
+            screen_colour: Rgb::hex(0x00B140),
+            screen_gain: 100.0,
+            screen_balance: 50.0,
+            despill: 0.0,
             clip_black: 0.0,
             clip_white: 100.0,
             shrink_grow: 0.0,
@@ -210,6 +250,10 @@ impl Params {
             curve_shadows: 43.0,
             curve_mids: 0.0,
             curve_highs: -25.0,
+            screen_colour: Rgb::hex(0x000000),
+            screen_gain: 107.0,
+            screen_balance: 91.0,
+            despill: 42.0,
             clip_black: 53.0,
             clip_white: 65.0,
             shrink_grow: -1.0,
@@ -249,6 +293,14 @@ impl Params {
             .min_by(|a, b| (a - self.beat_division).abs().total_cmp(&(b - self.beat_division).abs()))
             .unwrap();
         self.beat_pulse = self.beat_pulse.clamp(0.0, 100.0);
+        self.shadow_opacity = self.shadow_opacity.clamp(0.0, 100.0);
+        self.selective_tolerance = self.selective_tolerance.clamp(5.0, 90.0);
+        self.selective_hue = self.selective_hue.clamp(-180.0, 180.0);
+        self.selective_sat = self.selective_sat.clamp(-100.0, 100.0);
+        self.selective_light = self.selective_light.clamp(-100.0, 100.0);
+        self.screen_gain = self.screen_gain.clamp(0.0, 200.0);
+        self.screen_balance = self.screen_balance.clamp(0.0, 100.0);
+        self.despill = self.despill.clamp(0.0, 100.0);
     }
 
     /// 實際生效的 Temporal interval：開 Beat sync 時由 BPM 換算。

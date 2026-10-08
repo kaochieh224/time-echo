@@ -214,3 +214,111 @@ fn grading_duotone_bloom_mirror_do_what_they_say() {
     assert!(sum(&glow) > sum(&dark) + 100_000, "Bloom 應讓畫面變亮");
     assert!(e.renderer.monitor_views().is_some());
 }
+
+/// 中間一塊方形人物（遮罩 1）、其餘透明，用來測輪廓、陰影、Selective colour。
+fn square_person(colour: [u8; 3]) -> (Frame, Mask) {
+    let f = Frame::new(160, 90, [colour[0], colour[1], colour[2], 255].repeat(160 * 90));
+    let mut m = Mask::filled(160, 90, 0.0);
+    for y in 30..90 {
+        for x in 60..100 {
+            m.data[y * 160 + x] = 1.0;
+        }
+    }
+    (f, m)
+}
+
+fn single_echo() -> Params {
+    Params { figure_size: 100.0, echo_count: 1, axis_x: 0.0, edge_softness: 0.0, ..base() }
+}
+
+#[test]
+fn contour_keeps_only_the_edge() {
+    let mut p = single_echo();
+    let Some(mut e) = engine(&p) else { return };
+    let (f, m) = square_person([200, 50, 50]);
+    e.push_frame(&p, &f, Some(&m), 0.1);
+    p.surface = Surface::Contour;
+    e.render(&p, 0.0, false);
+    let out = e.renderer.read_output().unwrap();
+    // 方塊在輸出 x 120–200、y 60–180；中心應透明（背景色），左邊緣應是白線
+    assert!(close(px(&out, 160, 130), [0x10, 0x20, 0x30]), "內部 {:?}", px(&out, 160, 130));
+    let edge = (116..124).map(|x| px(&out, x, 130)).max_by_key(|c| c[0] as u32 + c[1] as u32 + c[2] as u32).unwrap();
+    assert!(edge[0] > 150 && edge[1] > 150, "邊緣應有白線 {edge:?}");
+}
+
+#[test]
+fn ground_shadow_darkens_behind_feet() {
+    let mut p = single_echo();
+    p.bg_colour = Rgb::hex(0xC0C0C0);
+    let Some(mut e) = engine(&p) else { return };
+    let (f, m) = square_person([200, 50, 50]);
+    e.push_frame(&p, &f, Some(&m), 0.1);
+    e.render(&p, 0.0, false);
+    let before = e.renderer.read_output().unwrap();
+    p.ground_shadows = true;
+    p.shadow_opacity = 100.0;
+    e.render(&p, 0.0, false);
+    let after = e.renderer.read_output().unwrap();
+    // 陰影往右上斜：方塊右側、腳附近的背景變暗
+    let (x, y) = (215, 170);
+    assert!(close(px(&before, x, y), [0xC0, 0xC0, 0xC0]));
+    assert!(px(&after, x, y)[0] < 0xB0, "陰影 {:?}", px(&after, x, y));
+    // 人物本身仍畫在陰影上面
+    assert!(close(px(&after, 160, 130), [200, 50, 50]));
+}
+
+#[test]
+fn selective_colour_shifts_only_target_hue() {
+    let mut p = single_echo();
+    let Some(mut e) = engine(&p) else { return };
+    // 左半紅、右半藍
+    let mut rgba = Vec::new();
+    for _y in 0..90 {
+        for x in 0..160 {
+            rgba.extend_from_slice(if x < 80 { &[220, 30, 30, 255] } else { &[30, 30, 220, 255] });
+        }
+    }
+    let f = Frame::new(160, 90, rgba);
+    e.push_frame(&p, &f, Some(&Mask::filled(1, 1, 1.0)), 0.1);
+    p.selective = true;
+    p.selective_colour = Rgb::hex(0xFF0000);
+    p.selective_hue = 120.0; // 紅 → 綠
+    e.render(&p, 0.0, false);
+    let out = e.renderer.read_output().unwrap();
+    let red_side = px(&out, 60, 90);
+    assert!(red_side[1] > 150 && red_side[0] < 80, "紅色應轉成綠色 {red_side:?}");
+    assert!(close(px(&out, 260, 90), [30, 30, 220]), "藍色不受影響");
+}
+
+#[test]
+fn keylight_despill_and_mask() {
+    use time_echo::params::MatteSource;
+    use time_echo::segment::{SegJob, build_mask};
+    let mut p = single_echo();
+    p.matte_source = MatteSource::Key;
+    p.screen_colour = Rgb::hex(0x00B140);
+    p.despill = 100.0;
+    let Some(mut e) = engine(&p) else { return };
+    // 左半綠幕、右半帶綠邊的膚色
+    let mut rgba = Vec::new();
+    for _y in 0..90 {
+        for x in 0..160 {
+            rgba.extend_from_slice(if x < 80 { &[0, 177, 64, 255] } else { &[200, 180, 140, 255] });
+        }
+    }
+    let f = std::sync::Arc::new(Frame::new(160, 90, rgba));
+    let mask = build_mask(None, &SegJob::from_params(f.clone(), 160, 90, &p)).unwrap();
+    assert!(mask.get(20, 45) < 0.05 && mask.get(140, 45) > 0.9);
+    e.push_frame(&p, &f, Some(&mask), 0.1);
+    e.render(&p, 0.0, false);
+    let out = e.renderer.read_output().unwrap();
+    assert!(close(px(&out, 60, 90), [0x10, 0x20, 0x30]), "綠幕應被去掉");
+    let with = px(&out, 260, 90);
+    // 同一張影格不做 Despill 再擷取一次比較
+    p.despill = 0.0;
+    e.push_frame(&p, &f, Some(&mask), 0.1);
+    e.render(&p, 0.0, false);
+    let without = px(&e.renderer.read_output().unwrap(), 260, 90);
+    assert!(without[1] >= with[1] + 6, "Despill 應壓低綠色：{with:?} vs {without:?}");
+    assert!(close([with[0], 0, with[2]], [without[0], 0, without[2]]), "紅藍不變");
+}

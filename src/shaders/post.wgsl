@@ -30,12 +30,24 @@ fn mirror_uv(uv: vec2<f32>, m: f32) -> vec2<f32> {
     return select(uv, vec2(1.0 - uv.x, uv.y), m > 0.5);
 }
 
-// 擷取：來源 RGB ＋ 整理後的遮罩 → 記憶緩衝的一層。c.x = mirror
+// 擷取：來源 RGB ＋ 整理後的遮罩 → 記憶緩衝的一層。
+// c.x = mirror；a.rgb = 幕色，b.x = Despill（0–1），b.y = 幕色是否中性
 @fragment
 fn fs_capture(in: VOut) -> @location(0) vec4<f32> {
     let uv = mirror_uv(in.uv, p.c.x);
-    let rgb = textureSample(tex0, samp, uv).rgb;
+    var rgb = textureSample(tex0, samp, uv).rgb;
     let m = textureSample(tex1, samp, uv).r;
+    // 05 Despill：把幕色主通道壓到其餘兩通道的平均以下（中性幕不處理）
+    if (p.b.x > 0.0 && p.b.y < 0.5) {
+        let s = p.a.rgb;
+        if (s.g >= s.r && s.g >= s.b) {
+            rgb.g = mix(rgb.g, min(rgb.g, (rgb.r + rgb.b) * 0.5), p.b.x);
+        } else if (s.b >= s.r) {
+            rgb.b = mix(rgb.b, min(rgb.b, (rgb.r + rgb.g) * 0.5), p.b.x);
+        } else {
+            rgb.r = mix(rgb.r, min(rgb.r, (rgb.g + rgb.b) * 0.5), p.b.x);
+        }
+    }
     return vec4(rgb, m);
 }
 

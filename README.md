@@ -63,7 +63,7 @@ cargo build --release
 
 ## 操作
 
-畫面：中央輸出、左側三個監看小窗（原始畫面／人物＋棋盤格／黑白遮罩）、右側控制面板 01–05 與節拍。頂端狀態列顯示輸出 FPS、AI FPS、緩衝已存張數（對應原介面「18 AI FPS · 95 ECHO FRAMES」）。
+版面照參考影片：頂端全域列（REC、配色切換、Guide、Hide UI、Fullscreen）與狀態列（來源類型、AI FPS、ECHO FRAMES）；左側三個診斷監看（01 ORIGINAL CAPTURE、02 PERSON ONLY / CHECKERBOARD、03 BINARY MASK）；中央合成預覽；下方五欄 01–05。配色預設是參考影片的黑底等寬字，右上角可切換成瑞士國際主義白底。
 
 | 快捷鍵 | 作用 |
 |---|---|
@@ -73,33 +73,31 @@ cargo build --release
 | 空白鍵 | 暫停／繼續來源（分身一起凍結） |
 | `Shift+R` | 開始／停止錄影，存到「影片」資料夾 |
 
-遮罩來源三選一：**AI**（人物分割）、**亮度**（黑底舞蹈影片用，再以 Clip black／white 調門檻）、**全畫面**（不去背）。
+## 控制項對照（參考影片 → 這版）
 
-## 規格對照
-
-已實作（MVP 全部，加上「原型完成」大部分）：
-
-- 01：攝影機、影片（循環、靜音）、Pause、Stop input、Reset memory、Mirror（換來源自動套用預設）、監看小窗、緩衝設定（解析度／取樣率／長度）
-- 02：Echo figures、Temporal interval、Echo spacing、Figure size、Axis X、排列模式（行進／置中）、舊影淡出
-- 03：表面模式（影像紋理／實心剪影）、Disintegrate、Light bloom、色彩模式（原色／白色／單色／自訂色）、背景（純色／原始畫面）
-- 04：Brightness、Contrast、Saturation、三段曲線（256 格 LUT）、Duotone
-- 05：Clip black／white、Shrink／grow、Edge softness
-- 節拍：BPM、Tap tempo、×2／÷2、Beat sync（間隔＝60 ÷ BPM × 拍數）、拍點脈衝
-- 輸出：解析度 960／1280／1920、Hide UI、Fullscreen、錄影、預設組（內建預設／示範，匯入匯出 JSON）
-
-時間模型照規格 2.1：以「已擷取的影格」計時、i = 0 是最新、舊的先畫、歷史不足時隱藏、超出容量時狀態列提示。
-
-與規格不同的地方：
-
-| 規格 | 這版 | 原因 |
+| 區 | 控制項 | 狀態 |
 |---|---|---|
-| 瀏覽器網頁（Vite＋WebGL2） | Rust 原生程式 | 使用者決定改用 Rust |
-| MediaPipe selfie 模型 | Robust Video Matting（ONNX） | 全身舞蹈畫面邊緣較好，且有時間穩定性；規格第 9 節列過這個風險。也可在面板「選擇模型…」換成其他單輸入的 ONNX 分割模型 |
-| 錄影 WebM | MP4（H.264） | ffmpeg 直接編碼，Mac 上剪輯軟體都吃 |
-| Shrink／Softness 在 GPU 擷取 pass | 在分割執行緒（CPU）上做 | 行為相同（只影響之後擷取的影格），程式較簡單、可單元測試 |
-| 匯入 MP3 自動估 BPM | 尚未做 | BPM 先手動或 Tap；匯入音樂要另加音訊解碼與播放 |
+| 01 LIVE INPUT | Start camera、Load video、Default camera 選單、Pause video、Stop input、Reset memory、Mirror camera、MOV / video has alpha、Segmentation screens、「AI person segmentation ready · GPU · fully embedded」 | 全部 |
+| | MATTE SOURCE（AI／Keylight／AI × Keylight／Luma／Full frame）、記憶緩衝設定 | 自加 |
+| 02 CHOREOGRAPHY | 排列模式選單（Reference / layered procession、Centered chorus、Mirror symmetry）、Import MP3、Pause MP3、BPM 與曲名、Beat sync、Echo figures、Temporal interval、Echo spacing、Figure size、Axis X | 全部 |
+| | 自動估 BPM、×2／÷2、Tap、間隔拍數、Beat pulse、Echo fade | 自加 |
+| 03 SURFACE & LIGHT | 表面選單（Textured video echoes、Delayed solid、Contour）、Disintegrate、Light bloom、White / monochrome 選單、Custom colour、Background colour（含色條）、Ground shadows | 全部 |
+| 04 COLOUR + CURVE | Brightness、Contrast、Saturation、RGB CURVE（Shadows／Midtones／Highlights）、SELECTIVE COLOUR（Pick Colour＋色票） | 全部 |
+| | Selective 的色相範圍／色相位移／飽和／明度、Duotone | 自加 |
+| 05 KEYLIGHT + OUTPUT | SCREEN MATTE：Screen colour（可 Pick）、Screen gain、Screen balance、Clip black、Clip white、Shrink / grow、Edge softness、Despill | 全部 |
+| | 輸出解析度、預設組（內建預設／示範、匯入匯出 JSON）、錄影 | 自加 |
+| 全域 | Guide、Hide UI、Fullscreen | 全部 |
+| | Code ON | **沒做**：影片看不出作用，不臆測 |
 
-「白色」「單色」「自訂色」的確切公式是自訂的（見 `src/shaders/composite.wgsl`），原工具的定義沒有取得。第二階段項目（MIDI、色鍵、Selective colour、輪廓模式、透明輸出）沒有做。
+說明書標為「待確認」的行為（選單裡的其他選項、Selective colour 取色後改什麼、Keylight 與 AI 遮罩怎麼合併、Beat sync 同步什麼），這版都是**自訂**的，定義寫在規格檔與程式註解。
+
+用法重點：
+
+- **Pick Colour**：按下後點中央預覽（或左側 01 原始畫面）取色，Selective colour 會自動開啟。05 的 Pick 是點 01 原始畫面取幕色。
+- **Keylight**：01 的 MATTE SOURCE 選 Keylight 或 AI × Keylight 才生效。黑底素材把 Screen colour 設成黑色（示範預設組就是 #000000），綠幕就取綠色。Despill 只在用色鍵時作用。
+- **MOV / video has alpha**：勾選後直接用影片的透明通道，略過 AI 與色鍵。ProRes 4444 的 MOV 與 VP9 alpha 的 WebM 可用。
+- **Import MP3**：自動估 BPM 並循環播放，第一拍以曲首為準；估成一半或兩倍時按 ×2／÷2，或連按 Tap。估計 BPM 也可以單獨跑：`cargo run --release --example bpm -- 歌曲.mp3`。
+- **Ground shadows**：每個分身的剪影壓扁、往右後方斜躺在腳下並模糊，Shadow opacity 調深淺。
 
 ## 程式結構
 
@@ -110,7 +108,9 @@ src/
   engine.rs        來源影格 → 擷取 → 排分身 → 算圖
   render.rs        wgpu 管線：擷取、合成、Bloom、監看小窗、讀回
   shaders/         composite.wgsl（分身：Clip → 表面 → Disintegrate → 調色 → 色彩模式）、post.wgsl
-  segment.rs       ONNX 分割（RVM／單輸入模型）、亮度遮罩、背景執行緒
+  segment.rs       ONNX 分割（RVM／單輸入模型）、遮罩來源組合、背景執行緒
+  key.rs           Keylight 色鍵、影片 alpha
+  audio.rs         MP3 解碼（ffmpeg）、自動估 BPM、播放（rodio）
   matte.rs         Shrink／grow、Edge softness
   curve.rs         三段曲線 LUT
   beat.rs          節拍時鐘、Tap tempo
@@ -125,8 +125,9 @@ tests/             gpu_pipeline.rs（GPU 整合測試）
 
 ## 驗證紀錄（2026-10-08，Linux 雲端容器）
 
-- `cargo build` 通過，無警告；`cargo test`：單元測試 20 項、GPU 整合測試 4 項全過（容器用 lavapipe 軟體 GPU）。
-  GPU 測試用「每張一個已知顏色」的合成影格，逐點確認：分身位置與取到的歷史影格正確、暫停凍結、Reset 後重新出現、Clip、Disintegrate、實心剪影、Duotone、Mirror、Bloom。
+- `cargo build` 通過，無警告；`cargo test`：單元測試 27 項、GPU 整合測試 8 項全過（容器用 lavapipe 軟體 GPU）。
+  GPU 測試用合成影格逐點確認：分身位置與取到的歷史影格正確、暫停凍結、Reset 後重新出現、Clip、Disintegrate、實心剪影、Contour、Ground shadows、Selective colour、Keylight 去背與 Despill、Duotone、Mirror、Bloom。
+- 自動 BPM：合成的 126 BPM 鼓點 MP3 估出 126.0；參考影片本身只有 6 秒又有剪接，估出 83.4（不準，這種短片要用 Tap）。
 - 離線算圖：合成的移動人物影片 150 張，AI 分割（RVM）＋示範預設組跑完，輸出 MP4 抽格檢查，紅底、分身排列、侵蝕都正確。
 - 介面：在虛擬螢幕開啟並截圖，面板、監看小窗、中文字型正常。
 - macOS：以 `aarch64-apple-darwin` 做交叉型別檢查（`cargo check`），含 nokhwa AVFoundation 與介面程式都通過。**沒有在真的 Mac 上連結執行過**，攝影機與 Metal 效能要在 Mac 上實測。

@@ -4,11 +4,13 @@
 //! 依間距、尺寸、軸心排開疊合 → 表面／調色 → Bloom → 輸出。
 
 pub mod app;
+pub mod audio;
 pub mod beat;
 pub mod curve;
 pub mod engine;
 pub mod frame;
 pub mod headless;
+pub mod key;
 pub mod matte;
 pub mod memory;
 pub mod params;
