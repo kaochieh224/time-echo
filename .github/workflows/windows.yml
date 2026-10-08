@@ -1,11 +1,13 @@
 # Windows x64 版：編譯、附上 ffmpeg 與 ONNX Runtime 打包成 zip。
-# 推 v* 標籤時另外發布到 GitHub Release；其他時候只留 Actions 的 artifact。
+# 推 v* 標籤或在 GitHub 發布 Release 時，zip 會附到該 Release；其他時候只留 Actions 的 artifact。
 name: Windows build
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -97,6 +99,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/time-echo-windows-x64.zip
+          append_body: true
           body: |
             Windows x64 版：下載 time-echo-windows-x64.zip，解壓後雙擊 time-echo.exe。
             第一次使用 AI 人物分割時，按 01 欄的「下載 AI 模型」（約 15 MB）。說明見 zip 內的 README-Windows.txt。
