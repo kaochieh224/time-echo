@@ -10,24 +10,24 @@ TIME ECHO：時間分身特效控制器（Windows x64 版）
 
 AI 人物分割
 -----------
-第一次用 AI 去背時，按 01 LIVE INPUT 欄的「下載 AI 模型」（約 15 MB，需要網路），
+第一次用 AI 去背時，按「01 / 即時輸入」欄的「下載 AI 模型」（約 15 MB，需要網路），
 下載完自動載入。無法上網的話，執行 download-model.bat，或手動下載
 https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx
-放進 models 資料夾。沒有模型時仍可用 Keylight 或 Luma 遮罩。
+放進 models 資料夾。沒有模型時仍可用色鍵或亮度遮罩。
 
 攝影機
 ------
-按 Start camera。若 Windows 詢問相機權限請允許；被擋過的話到
+按「開啟攝影機」。若 Windows 詢問相機權限請允許；被擋過的話到
 「設定 → 隱私權與安全性 → 相機」開啟「讓桌面應用程式存取相機」。
-Start camera 打不開時，可改用 01 欄的「備援攝影機」：填 0（第一台）或裝置名稱，再按 ffmpeg。
+攝影機打不開時，可改用 01 欄的「備援攝影機」：填 0（第一台）或裝置名稱，再按 ffmpeg。
 
 錄影
 ----
-REC 或 Shift+R，影片存到「影片」資料夾（time-echo-日期-時間Z.mp4，時間為 UTC）。
+按「錄影」或 Shift+R，影片存到「影片」資料夾（time-echo-日期-時間Z.mp4，時間為 UTC）。
 
 快捷鍵
 ------
-H 隱藏介面　F 全螢幕　R Reset memory　空白鍵 暫停　Shift+R 錄影
+H 隱藏介面　F 全螢幕　R 重設記憶　空白鍵 暫停　Shift+R 錄影
 
 離線算圖（命令提示字元）
 ----------------------
