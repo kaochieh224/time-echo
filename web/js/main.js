@@ -487,6 +487,7 @@ async function toggleRecording() {
 function setSource(next) {
     source?.stop();
     source = next;
+    engine.renderer.resetSourceCheck();
     frozen = false;
     lastPush = null;
     $('start').hidden = true;
@@ -659,7 +660,9 @@ function updateHud(now) {
 
     const { ring, lastPlan: plan } = engine;
     const rec = recorder ? ` · ● 錄影 ${recorder.seconds.toFixed(0)} 秒` : '';
-    $('status').textContent = `記憶 ${ring.count}/${ring.capacity} 張 · ${fps.toFixed(0)} FPS${frozen ? ' · 已凍結' : ''}${rec}`;
+    // 來源被判定上下顛倒而換了上傳方式時顯示出來，方便回報問題
+    const fix = { direct: '', flip: ' · 方向修正：翻轉', pixels: ' · 方向修正：逐畫素' }[engine.renderer.sourceMode];
+    $('status').textContent = `記憶 ${ring.count}/${ring.capacity} 張 · ${fps.toFixed(0)} FPS${frozen ? ' · 已凍結' : ''}${fix}${rec}`;
     const notes = [];
     if (plan.beyondCapacity > 0) notes.push(`有 ${plan.beyondCapacity} 個分身超出記憶長度`);
     if (plan.intervalTooSmall) notes.push('間隔小於取樣間隔，相鄰分身會取到同一張');
@@ -678,10 +681,11 @@ function frame(ms) {
             lastPush = now;
             const [drawable, w, h] = sourceDrawable();
             engine.pushFrame(p, drawable, w, h, dt, (bw, bh) => makeMask(drawable, bw, bh));
+            // 有些瀏覽器把 video 複製進貼圖時會上下顛倒：檢查到就換上傳方式，並清掉方向錯的記憶
+            engine.renderer.checkSource(drawable, w, h, () => engine.resetMemory(p));
         }
         if (engine.srcSize) {
             engine.render(p, beatTime(now));
-            recorder?.frame();
             updateHud(now);
         }
     } catch (e) {

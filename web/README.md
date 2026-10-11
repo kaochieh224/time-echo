@@ -40,6 +40,7 @@ node --test web/tests/core.test.mjs      # 純計算模組的測試
 - 套用或匯入預設組時，鏡像、遮罩來源、解析度與緩衝設定維持目前的值（這些跟裝置與拍攝環境有關）。
 - 錄影用瀏覽器的 MediaRecorder（`js/recorder.js`），格式由瀏覽器決定（MP4 或 WebM），音樂在播放時會一起錄進去。
 - 音樂匯入只分析前 120 秒來估 BPM（`js/audio.js`）。
+- 來源上傳後會檢查方向（`js/orientation.js`）：iPadOS／iOS 的 WebKit 把 video 直接複製進 GPU 貼圖時會上下顛倒，偵測到就改用 `flipY`，還不對再退到逐畫素上傳。畫面左上角的狀態列會顯示「方向修正」。
 - 沒有監看小窗與影片透明通道。
 
 ## 部署

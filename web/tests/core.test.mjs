@@ -8,6 +8,7 @@ import { estimateBpm } from '../js/audio.js';
 import { BeatClock, buildLut } from '../js/curve.js';
 import { buildMask, keyAlpha, refine, resizeMask } from '../js/matte.js';
 import { EchoRing, MEMORY_BUDGET_BYTES, bufferSize, capacityFor, planEchoes } from '../js/memory.js';
+import { BLOCK_H, BLOCK_W, blockMean, compareOrientation, probeBlocks } from '../js/orientation.js';
 import { PRESETS, applyPreset, defaults, effectiveInterval, fromJSON } from '../js/params.js';
 
 const near = (a, b, eps = 1e-4) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
@@ -173,6 +174,23 @@ test('AI 遮罩：縮放到緩衝解析度、和色鍵相乘，模型沒載入�
     const rgba = new Uint8ClampedArray([...green, ...skin, ...skin, ...green]);
     const both = buildMask({ ...p, matte_source: 'ai_key', screen_colour: '#00B040' }, 2, 2, () => rgba, () => half);
     assert.deepEqual([...both.data], [0, 128, 128, 0]);
+});
+
+test('來源方向檢查：分得出正的、上下顛倒與分不出來', () => {
+    assert.equal(probeBlocks(100, 100), null);
+    assert.deepEqual(probeBlocks(640, 360), [[[0, 0], [288, 0], [576, 0]], [[0, 344], [288, 344], [576, 344]]]);
+    const block = new Uint8Array(BLOCK_W * BLOCK_H * 4).fill(40);
+    assert.deepEqual(blockMean(block), [40, 40, 40]);
+    const sky = [[90, 140, 220], [100, 150, 230], [80, 130, 210]];
+    const floor = [[60, 40, 30], [70, 50, 35], [50, 35, 25]];
+    const jitter = (rows) => rows.map((c) => c.map((v) => v + 3));
+    assert.equal(compareOrientation([jitter(sky), jitter(floor)], [sky, floor]), 'ok');
+    assert.equal(compareOrientation([jitter(floor), jitter(sky)], [sky, floor]), 'flipped');
+    // 上下緣幾乎一樣（例如全黑）時不下結論
+    assert.equal(compareOrientation([floor, floor], [floor, jitter(floor)]), 'unsure');
+    // GPU 的內容和參考畫面對不起來時也不下結論
+    const grey = [[128, 128, 128], [128, 128, 128], [128, 128, 128]];
+    assert.equal(compareOrientation([grey, grey], [sky, floor]), 'unsure');
 });
 
 test('參數：補預設值、夾範圍、桌面版預設組可載入', () => {

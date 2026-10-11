@@ -3,6 +3,7 @@
 
 import { buildLut } from './curve.js';
 import { isNeutral } from './matte.js';
+import { BLOCK_H, BLOCK_W, blockMean, compareOrientation, probeBlocks } from './orientation.js';
 import { rgb } from './params.js';
 
 const COLOR_FORMAT = 'rgba8unorm';
@@ -21,6 +22,13 @@ const SLOT_COUNT = 9;
 const TEX = GPUTextureUsage.TEXTURE_BINDING;
 const COPY_DST = GPUTextureUsage.COPY_DST;
 const ATTACH = GPUTextureUsage.RENDER_ATTACHMENT;
+// 來源貼圖：copyExternalImageToTexture 的目標需要 RENDER_ATTACHMENT，方向檢查要讀回所以加 COPY_SRC
+const SRC_USAGE = COPY_DST | ATTACH | GPUTextureUsage.COPY_SRC;
+
+/** 來源上傳方式，方向檢查發現顛倒時依序往下換；最後一種逐畫素上傳，方向一定對但比較慢。 */
+const SOURCE_MODES = ['direct', 'flip', 'pixels'];
+/** 方向檢查最多試幾次（畫面一直分不出上下就放棄，維持目前的方式） */
+const MAX_PROBES = 30;
 
 /** 0–1 的色相 */
 export function hueOf([r, g, b]) {
@@ -113,8 +121,14 @@ export class Renderer {
 
         this.lut = this.tex(256, 1, 'r8unorm', COPY_DST);
         this.lutKey = '';
-        // copyExternalImageToTexture 的目標需要 RENDER_ATTACHMENT
-        this.src = this.tex(1, 1, COLOR_FORMAT, COPY_DST | ATTACH);
+        this.src = this.tex(1, 1, COLOR_FORMAT, SRC_USAGE);
+        this.sourceMode = 'direct';
+        this.sourceSettled = false;
+        this.probing = false;
+        this.probes = 0;
+        // 方向檢查的參考畫面與「逐畫素上傳」共用的 2D canvas
+        this.refCanvas = document.createElement('canvas');
+        this.refCtx = this.refCanvas.getContext('2d', { willReadFrequently: true });
         this.mask = this.tex(1, 1, 'r8unorm', COPY_DST);
         this.writeTex(this.mask, new Uint8Array([255]), 1);
         this.memory = null;
@@ -148,9 +162,82 @@ export class Renderer {
     uploadSource(drawable, width, height) {
         if (this.src.width !== width || this.src.height !== height) {
             this.src.texture.destroy();
-            this.src = this.tex(width, height, COLOR_FORMAT, COPY_DST | ATTACH);
+            this.src = this.tex(width, height, COLOR_FORMAT, SRC_USAGE);
         }
-        this.device.queue.copyExternalImageToTexture({ source: drawable }, { texture: this.src.texture }, [width, height]);
+        if (this.sourceMode === 'pixels') {
+            this.drawRef(drawable, width, height);
+            this.writeTex(this.src, this.refCtx.getImageData(0, 0, width, height).data, 4);
+        } else {
+            this.device.queue.copyExternalImageToTexture({ source: drawable, flipY: this.sourceMode === 'flip' }, { texture: this.src.texture }, [width, height]);
+        }
+    }
+
+    drawRef(drawable, width, height) {
+        if (this.refCanvas.width !== width || this.refCanvas.height !== height) {
+            this.refCanvas.width = width;
+            this.refCanvas.height = height;
+        }
+        this.refCtx.drawImage(drawable, 0, 0, width, height);
+    }
+
+    /** 換了來源：重新檢查方向（不同種類的來源結果可能不一樣）。 */
+    resetSourceCheck() {
+        this.sourceMode = 'direct';
+        this.sourceSettled = false;
+        this.probes = 0;
+    }
+
+    /**
+     * 檢查剛上傳的來源貼圖有沒有上下顛倒，顛倒就換下一種上傳方式。
+     * 要在 uploadSource 之後、同一個影格內用同一個 drawable 呼叫；結果確定前可以每張都呼叫。
+     * 上傳方式改變時呼叫 `onChange()`（之前擷取的影格方向是錯的，呼叫端要清掉）。
+     */
+    checkSource(drawable, width, height, onChange) {
+        if (this.sourceSettled || this.probing) return;
+        const blocks = probeBlocks(width, height);
+        if (!blocks || this.sourceMode === 'pixels' || this.src.width !== width || this.src.height !== height) {
+            this.sourceSettled = true;
+            return;
+        }
+        this.probing = true;
+        const mode = this.sourceMode;
+        // 參考畫面：同一張影格用 2D canvas 畫出來
+        this.drawRef(drawable, width, height);
+        const ref = blocks.map((row) => row.map(([x, y]) => blockMean(this.refCtx.getImageData(x, y, BLOCK_W, BLOCK_H).data)));
+
+        const blockBytes = BLOCK_W * BLOCK_H * 4;
+        const flat = blocks.flat();
+        const buffer = this.device.createBuffer({ size: blockBytes * flat.length, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        const enc = this.device.createCommandEncoder();
+        flat.forEach(([x, y], i) => {
+            enc.copyTextureToBuffer({ texture: this.src.texture, origin: [x, y] }, { buffer, offset: i * blockBytes, bytesPerRow: BLOCK_W * 4 }, [BLOCK_W, BLOCK_H]);
+        });
+        this.device.queue.submit([enc.finish()]);
+        buffer
+            .mapAsync(GPUMapMode.READ)
+            .then(() => {
+                const bytes = new Uint8Array(buffer.getMappedRange());
+                const means = flat.map((_, i) => blockMean(bytes, i * blockBytes));
+                const result = compareOrientation([means.slice(0, 3), means.slice(3)], ref);
+                // 檢查期間來源或上傳方式換過就不採用這次的結果
+                if (mode !== this.sourceMode || this.sourceSettled) return;
+                this.probes++;
+                if (result === 'ok' || this.probes >= MAX_PROBES) {
+                    this.sourceSettled = true;
+                } else if (result === 'flipped') {
+                    this.sourceMode = SOURCE_MODES[SOURCE_MODES.indexOf(mode) + 1];
+                    this.probes = 0;
+                    onChange?.(this.sourceMode);
+                }
+            })
+            .catch((e) => {
+                console.error(e);
+                this.sourceSettled = true;
+            })
+            .finally(() => {
+                buffer.destroy();
+                this.probing = false;
+            });
     }
 
     /** 上傳遮罩（R8，緊密排列）。 */
