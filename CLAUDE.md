@@ -58,3 +58,14 @@ RVM 模型是 GPL-3.0，刻意不放進儲存庫，也不放進 Windows 的 zip�
 ## Windows 打包與 CI
 
 `.github/workflows/windows.yml` 會跑單元測試、以 `+crt-static` 編譯、組出 `time-echo-windows-x64.zip`（執行檔＋`ffmpeg/`＋`onnxruntime.dll`＋VC++ runtime DLL＋`presets/`＋`packaging/windows/` 裡的檔案），再從另一個工作目錄執行打包好的執行檔做煙霧測試：亮度遮罩與 AI 遮罩各算 30 張。每次推到 `main` 都會產生一份 Actions artifact；推 `v*` 標籤則會把 zip 附到該 Release。凡是會改變「執行檔怎麼找到身旁檔案」的修改，都要確保這個煙霧測試還能通過。
+
+## 網頁版（`web/`，手機測試版）
+
+桌面版的獨立改寫：純 JavaScript ＋ WebGPU，沒有建置步驟，也不依賴 Rust 這邊的任何程式。模組對應與差異見 `web/README.md`。
+
+```bash
+node scripts/web-dev-server.mjs          # http://localhost:8765/
+node --test web/tests/core.test.mjs      # 純計算模組的測試
+```
+
+排分身、遮罩、參數範圍這些邏輯在 Rust 與 JavaScript 各有一份，`web/shaders/` 是 `src/shaders/` 的原樣複本：改了一邊要同步另一邊。
