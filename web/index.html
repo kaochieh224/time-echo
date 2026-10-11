@@ -16,6 +16,13 @@
             <span id="status"></span>
             <ul id="notes"></ul>
         </div>
+        <button id="btn-rec" aria-pressed="false" disabled>錄影</button>
+        <div id="rec-result" hidden>
+            <span id="rec-info"></span>
+            <button id="btn-share">分享</button>
+            <a id="link-download" class="button">下載</a>
+            <button id="btn-rec-close">關閉</button>
+        </div>
         <section id="start">
             <h1>TIME ECHO</h1>
             <p class="sub">時間分身 · 手機測試版</p>
@@ -42,6 +49,8 @@
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <input id="file-preset" type="file" accept="application/json,.json" hidden>
+<input id="file-music" type="file" accept="audio/*" hidden>
+<audio id="music" loop></audio>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

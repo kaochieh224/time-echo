@@ -123,8 +123,61 @@ body {
     gap: 10px;
 }
 
+#btn-rec {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    min-width: 64px;
+    border-radius: 999px;
+    border-color: var(--accent);
+    background: rgba(11, 11, 13, 0.7);
+    color: var(--accent);
+}
+
+#btn-rec::before {
+    content: "● ";
+}
+
+#btn-rec[aria-pressed="true"] {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+#btn-rec[aria-pressed="true"]::before {
+    content: "■ ";
+}
+
+#rec-result {
+    position: absolute;
+    inset: auto 12px 12px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: rgba(21, 21, 24, 0.95);
+    font-size: 14px;
+}
+
+#rec-result[hidden] {
+    display: none;
+}
+
+#rec-info {
+    flex: 1 1 100%;
+}
+
 /* ── 按鈕 ── */
-button {
+a.button {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+}
+
+button,
+a.button {
     min-height: 44px;
     padding: 0 16px;
     border: 1px solid var(--line);

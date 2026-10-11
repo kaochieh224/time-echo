@@ -1,8 +1,10 @@
 // 手機版前端：來源、主迴圈與控制面板。對應桌面版 src/app.rs 的角色。
 
+import { analyseFile } from './audio.js';
 import { Engine } from './engine.js';
 import { buildMask } from './matte.js';
 import { BUFFER_RES, OUTPUT_RES, PRESETS, applyPreset, defaults, effectiveInterval, fromJSON, fromObject, sanitize } from './params.js';
+import { Recorder, canRecord } from './recorder.js';
 import { Renderer } from './renderer.js';
 import { PersonSegmenter } from './segment.js';
 import { DemoSource, MAX_SOURCE_EDGE, openCamera, openFile } from './sources.js';
@@ -17,6 +19,11 @@ let facing = 'user';
 let frozen = false;
 let lastPush = null;
 let stopped = false;
+let recorder = null;
+/** 上一段錄好的影片（等使用者分享或下載） */
+let recording = null;
+/** 匯入的音樂：name 是檔名；ctx／tap 是把音樂接進錄影用的 WebAudio 節點 */
+const music = { name: '', url: '', ctx: null, tap: null };
 /** AI 分割器的狀態：idle → loading → ready／failed */
 let ai = { state: 'idle', segmenter: null, error: '' };
 
@@ -199,12 +206,15 @@ function liveHint(text) {
     return node;
 }
 
+/** 一排動作按鈕。`items` = [[標籤, onClick], …]；標籤可以是函式（跟著狀態變）。 */
 function actions(...items) {
     return el(
         'div',
         { className: 'row ctl' },
         ...items.map(([text, onClick]) => {
-            const b = el('button', { type: 'button' }, text);
+            const b = el('button', { type: 'button' });
+            if (typeof text === 'function') refreshers.push(() => (b.textContent = text()));
+            else b.textContent = text;
             b.addEventListener('click', onClick);
             return b;
         }),
@@ -310,16 +320,23 @@ function buildPanel() {
             slider('bpm', 'BPM', 60, 200, 1),
             choice('beat_division', '拍數', [[0.125, '1/8'], [0.25, '1/4'], [0.5, '1/2'], [1, '1'], [2, '2']], { when: (q) => q.beat_sync }),
             slider('beat_pulse', '節拍脈衝', 0, 100, 1, ' %'),
-            actions([
-                '打拍',
-                () => {
-                    const bpm = engine?.beat.tap(performance.now() / 1000);
-                    if (bpm) {
-                        p.bpm = Math.round(bpm);
-                        changed();
-                    }
-                },
-            ]),
+            actions(
+                [
+                    '打拍',
+                    () => {
+                        const bpm = engine?.beat.tap(beatTime(performance.now() / 1000));
+                        if (bpm) {
+                            p.bpm = Math.round(bpm);
+                            changed();
+                        }
+                    },
+                ],
+                ['×2', () => scaleBpm(2)],
+                ['÷2', () => scaleBpm(0.5)],
+            ),
+            group('音樂'),
+            actions(['匯入音樂', () => $('file-music').click()], [() => ($('music').paused ? '播放音樂' : '暫停音樂'), toggleMusic]),
+            liveHint(() => (music.name ? `${music.name}（錄影時會一起錄進去）` : '匯入音樂會自動估 BPM；不準可以按 ×2／÷2 或「打拍」。')),
             group('預設組檔案（和桌面版的 JSON 通用）'),
             actions(['匯入 JSON', () => $('file-preset').click()], ['匯出 JSON', exportPreset]),
         ],
@@ -352,6 +369,117 @@ function exportPreset() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }));
     el('a', { href: url, download: 'time-echo-preset.json' }).click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ───────────── 音樂與節拍 ─────────────
+
+/** 節拍時鐘用的時間：音樂在播就跟著音樂的位置，否則用牆上時間。 */
+function beatTime(now) {
+    const audio = $('music');
+    return music.name && !audio.paused ? audio.currentTime : now;
+}
+
+function scaleBpm(factor) {
+    const bpm = p.bpm * factor;
+    if (bpm < 60 || bpm > 200) return;
+    p.bpm = bpm;
+    changed();
+}
+
+async function loadMusic(file) {
+    const audio = $('music');
+    audio.pause();
+    if (music.url) URL.revokeObjectURL(music.url);
+    music.url = URL.createObjectURL(file);
+    music.name = file.name;
+    audio.src = music.url;
+    // 拍點對齊音樂開頭
+    engine.beat.origin = 0;
+    refresh();
+    toast(`分析 ${file.name} 的 BPM…`);
+    const bpm = await analyseFile(file);
+    if (music.name !== file.name) return;
+    if (bpm) {
+        p.bpm = bpm;
+        changed();
+        toast(`已匯入 ${file.name}，估計 ${bpm.toFixed(1)} BPM`);
+    } else {
+        toast(`已匯入 ${file.name}，估不出 BPM，請用「打拍」`);
+    }
+}
+
+/** 第一次播放時把音樂接到 WebAudio，錄影才拿得到音軌；不支援就只播放、不錄音。 */
+function connectMusic() {
+    if (music.ctx) return;
+    const Ctx = window.AudioContext ?? window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+        music.ctx = new Ctx();
+        const node = music.ctx.createMediaElementSource($('music'));
+        music.tap = music.ctx.createMediaStreamDestination();
+        node.connect(music.ctx.destination);
+        node.connect(music.tap);
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function toggleMusic() {
+    const audio = $('music');
+    if (!music.name) {
+        toast('還沒匯入音樂');
+        return;
+    }
+    if (audio.paused) {
+        connectMusic();
+        await music.ctx?.resume();
+        await audio.play().catch(() => toast('這個音樂格式瀏覽器不能播放'));
+    } else {
+        audio.pause();
+    }
+    refresh();
+}
+
+// ───────────── 錄影 ─────────────
+
+function updateRecordUi() {
+    const rec = $('btn-rec');
+    rec.disabled = source === null;
+    rec.hidden = recording !== null;
+    rec.textContent = recorder ? '停止' : '錄影';
+    rec.setAttribute('aria-pressed', String(recorder !== null));
+    $('rec-result').hidden = recording === null;
+}
+
+async function toggleRecording() {
+    if (!recorder) {
+        const canvas = $('out');
+        if (!canRecord(canvas)) {
+            toast('這個瀏覽器不支援錄影');
+            return;
+        }
+        try {
+            const audioTrack = $('music').paused ? null : (music.tap?.stream.getAudioTracks()[0] ?? null);
+            recorder = new Recorder(canvas, audioTrack);
+        } catch (e) {
+            toast(`無法開始錄影：${e.message}`);
+        }
+        updateRecordUi();
+        return;
+    }
+    const active = recorder;
+    recorder = null;
+    try {
+        const { file, seconds } = await active.stop();
+        recording = { file, url: URL.createObjectURL(file) };
+        $('rec-info').textContent = `錄好了：${seconds.toFixed(0)} 秒，${(file.size / 1e6).toFixed(1)} MB（${file.name.split('.').pop().toUpperCase()}）`;
+        $('link-download').href = recording.url;
+        $('link-download').download = file.name;
+        $('btn-share').hidden = !navigator.canShare?.({ files: [file] });
+    } catch (e) {
+        toast(`錄影失敗：${e.message}`);
+    }
+    updateRecordUi();
 }
 
 // ───────────── 來源 ─────────────
@@ -387,6 +515,7 @@ function updateBar() {
     $('btn-flip').disabled = source?.kind !== 'camera';
     $('btn-reset').disabled = !has;
     $('btn-source').disabled = !has;
+    updateRecordUi();
 }
 
 function bindEvents() {
@@ -440,6 +569,26 @@ function bindEvents() {
         panel.hidden = !panel.hidden;
         $('btn-panel').textContent = panel.hidden ? '展開面板' : '收起面板';
         $('btn-panel').setAttribute('aria-expanded', String(!panel.hidden));
+    });
+    $('file-music').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (file) loadMusic(file);
+    });
+    for (const type of ['play', 'pause']) $('music').addEventListener(type, refresh);
+    $('btn-rec').addEventListener('click', toggleRecording);
+    $('btn-share').addEventListener('click', async () => {
+        try {
+            await navigator.share({ files: [recording.file], title: 'TIME ECHO' });
+        } catch (e) {
+            // 使用者自己取消分享不算錯誤
+            if (e.name !== 'AbortError') toast('分享失敗，請改用「下載」');
+        }
+    });
+    $('btn-rec-close').addEventListener('click', () => {
+        URL.revokeObjectURL(recording.url);
+        recording = null;
+        updateRecordUi();
     });
     $('file-preset').addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -509,7 +658,8 @@ function updateHud(now) {
     fpsSince = now;
 
     const { ring, lastPlan: plan } = engine;
-    $('status').textContent = `記憶 ${ring.count}/${ring.capacity} 張 · ${fps.toFixed(0)} FPS${frozen ? ' · 已凍結' : ''}`;
+    const rec = recorder ? ` · ● 錄影 ${recorder.seconds.toFixed(0)} 秒` : '';
+    $('status').textContent = `記憶 ${ring.count}/${ring.capacity} 張 · ${fps.toFixed(0)} FPS${frozen ? ' · 已凍結' : ''}${rec}`;
     const notes = [];
     if (plan.beyondCapacity > 0) notes.push(`有 ${plan.beyondCapacity} 個分身超出記憶長度`);
     if (plan.intervalTooSmall) notes.push('間隔小於取樣間隔，相鄰分身會取到同一張');
@@ -530,7 +680,7 @@ function frame(ms) {
             engine.pushFrame(p, drawable, w, h, dt, (bw, bh) => makeMask(drawable, bw, bh));
         }
         if (engine.srcSize) {
-            engine.render(p, now);
+            engine.render(p, beatTime(now));
             updateHud(now);
         }
     } catch (e) {

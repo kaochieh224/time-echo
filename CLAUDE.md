@@ -68,4 +68,4 @@ node scripts/web-dev-server.mjs          # http://localhost:8765/
 node --test web/tests/core.test.mjs      # 純計算模組的測試
 ```
 
-排分身、遮罩、參數範圍這些邏輯在 Rust 與 JavaScript 各有一份，`web/shaders/` 是 `src/shaders/` 的原樣複本：改了一邊要同步另一邊。
+排分身、遮罩、參數範圍這些邏輯在 Rust 與 JavaScript 各有一份，`web/shaders/` 是 `src/shaders/` 的原樣複本：改了一邊要同步另一邊。`.github/workflows/pages.yml` 會在推到 `main` 時把 `web/` 發佈到 GitHub Pages，並檢查兩邊的 shader 一致。

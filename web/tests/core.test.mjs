@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { estimateBpm } from '../js/audio.js';
 import { BeatClock, buildLut } from '../js/curve.js';
 import { buildMask, keyAlpha, refine, resizeMask } from '../js/matte.js';
 import { EchoRing, MEMORY_BUDGET_BYTES, bufferSize, capacityFor, planEchoes } from '../js/memory.js';
@@ -93,6 +94,26 @@ test('節拍脈衝衰減，打拍估 BPM', () => {
     for (let i = 0; i < 6; i++) bpm = c.tap(10 + (i * 60) / 126);
     near(bpm, 126, 0.01);
     assert.equal(c.tap(100), null);
+});
+
+/** 每拍一個衰減的低頻鼓聲 */
+function clickTrack(bpm, seconds, rate) {
+    const out = new Float32Array(seconds * rate);
+    const beat = (60 / bpm) * rate;
+    for (let i = 0; i < out.length; i++) {
+        const since = (i % beat) / rate;
+        out[i] = Math.sin(2 * Math.PI * 60 * since) * Math.exp(-since * 30);
+    }
+    return out;
+}
+
+test('BPM 估計：節拍音軌估得準，太短或無聲回傳 null', () => {
+    for (const bpm of [126, 90, 174]) {
+        const got = estimateBpm(clickTrack(bpm, 20, 22050), 22050);
+        assert.ok(Math.abs(got - bpm) < 1.5, `${bpm} → ${got}`);
+    }
+    assert.equal(estimateBpm(clickTrack(120, 2, 22050), 22050), null);
+    assert.equal(estimateBpm(new Float32Array(22050 * 20), 22050), null);
 });
 
 test('色鍵：去掉綠幕、保留膚色；黑幕依亮度', () => {

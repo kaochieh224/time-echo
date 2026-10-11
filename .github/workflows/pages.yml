@@ -1,0 +1,40 @@
+# 網頁版（手機測試版）：把 web/ 發佈到 GitHub Pages。
+# 儲存庫的 Settings → Pages → Source 要先選「GitHub Actions」。
+name: Web (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "src/shaders/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 純計算模組的測試
+        run: node --test web/tests/core.test.mjs
+      - name: 確認 shader 和桌面版一致
+        run: diff -r src/shaders web/shaders
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

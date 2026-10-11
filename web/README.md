@@ -24,6 +24,9 @@ node --test web/tests/core.test.mjs      # 純計算模組的測試
 | `js/renderer.js` | `src/render.rs` | WebGPU 管線，最後一個 pass 直接畫到 canvas |
 | `js/engine.js` | `src/engine.rs` | 擷取節奏與算圖 |
 | `js/sources.js` | `src/source.rs` | 攝影機、本機影片、示範動畫 |
+| `js/segment.js` | `src/segment.rs` | AI 人物分割（模型不同） |
+| `js/audio.js` | `src/audio.rs` | BPM 估計 |
+| `js/recorder.js` | `src/record.rs` | 錄影 |
 | `js/main.js` | `src/app.rs` | 手機介面與主迴圈 |
 | `shaders/*.wgsl` | `src/shaders/*.wgsl` | **原樣複製**，改了一邊要同步另一邊 |
 
@@ -31,8 +34,14 @@ node --test web/tests/core.test.mjs      # 純計算模組的測試
 
 ## 和桌面版的差異
 
-- 還沒有 AI 人物去背。遮罩來源只有亮度、色鍵、全畫面；載入桌面預設組時 `ai` 會換成 `luma`、`ai_key` 換成 `key`。
+- AI 人物去背改用 MediaPipe 的自拍分割模型（`js/segment.js`，Apache 2.0），不是桌面版的 RVM。函式庫與模型在第一次用到時才從 jsDelivr 與 Google 的 CDN 下載，沒有放進儲存庫；邊緣品質比 RVM 差。
 - 解析度選項較低：輸出 720／960／1280，緩衝 320／480／640。
 - 記憶緩衝另有 96 MB 的上限（`memory.js` 的 `MEMORY_BUDGET_BYTES`），避免手機瀏覽器把分頁砍掉。
-- 套用或匯入預設組時，鏡像、解析度與緩衝設定維持目前的值（這些跟裝置有關）。
-- 沒有監看小窗、錄影、音樂匯入與影片透明通道。
+- 套用或匯入預設組時，鏡像、遮罩來源、解析度與緩衝設定維持目前的值（這些跟裝置與拍攝環境有關）。
+- 錄影用瀏覽器的 MediaRecorder（`js/recorder.js`），格式由瀏覽器決定（MP4 或 WebM），音樂在播放時會一起錄進去。
+- 音樂匯入只分析前 120 秒來估 BPM（`js/audio.js`）。
+- 沒有監看小窗與影片透明通道。
+
+## 部署
+
+`.github/workflows/pages.yml` 在 `main` 的 `web/` 有變動時跑測試、確認 shader 和桌面版一致，再把 `web/` 發佈到 GitHub Pages。儲存庫的 Settings → Pages → Source 要選「GitHub Actions」。
