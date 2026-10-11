@@ -681,6 +681,7 @@ function frame(ms) {
         }
         if (engine.srcSize) {
             engine.render(p, beatTime(now));
+            recorder?.frame();
             updateHud(now);
         }
     } catch (e) {
