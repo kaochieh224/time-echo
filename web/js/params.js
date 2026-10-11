@@ -4,22 +4,21 @@
 // 手機版的解析度選項比桌面版低（記憶體與填充率）。
 export const OUTPUT_RES = [720, 960, 1280];
 export const BUFFER_RES = [320, 480, 640];
-// 網頁版還沒有 AI 去背，桌面預設組的 ai／ai_key 會換成 luma／key。
-export const MATTE_SOURCES = ['luma', 'key', 'full'];
+export const MATTE_SOURCES = ['ai', 'key', 'ai_key', 'luma', 'full'];
 export const LAYOUTS = ['procession', 'centered', 'symmetric'];
 export const SURFACES = ['textured', 'solid', 'contour'];
 export const COLOUR_MODES = ['original', 'white', 'mono', 'custom'];
 export const BG_MODES = ['solid', 'source'];
 export const BEAT_DIVISIONS = [0.125, 0.25, 0.5, 1, 2];
 
-/** 換預設組時保留的欄位：跟裝置有關，不屬於「風格」。 */
-const DEVICE_KEYS = ['mirror', 'output_res', 'buffer_res', 'capture_rate', 'memory_length'];
+/** 換預設組時保留的欄位：跟裝置與拍攝環境有關，不屬於「風格」。 */
+const DEVICE_KEYS = ['mirror', 'matte_source', 'output_res', 'buffer_res', 'capture_rate', 'memory_length'];
 
 export function defaults() {
     return {
         output_res: 960,
         mirror: true,
-        matte_source: 'luma',
+        matte_source: 'ai',
         buffer_res: 480,
         capture_rate: 15,
         memory_length: 8,
@@ -152,8 +151,6 @@ export function sanitize(p) {
     p.screen_balance = clamp(p.screen_balance, 0, 100);
     p.despill = clamp(p.despill, 0, 100);
 
-    if (p.matte_source === 'ai') p.matte_source = 'luma';
-    if (p.matte_source === 'ai_key') p.matte_source = 'key';
     p.matte_source = oneOf(p.matte_source, MATTE_SOURCES, d.matte_source);
     p.layout = oneOf(p.layout, LAYOUTS, d.layout);
     p.surface = oneOf(p.surface, SURFACES, d.surface);
@@ -187,7 +184,7 @@ export function fromJSON(text) {
     return fromObject(JSON.parse(text));
 }
 
-/** 套用預設組：風格欄位全部換掉，裝置相關的欄位保留目前的值。 */
+/** 套用預設組：風格欄位全部換掉，裝置相關的欄位與遮罩來源保留目前的值。 */
 export function applyPreset(current, values) {
     const p = fromObject(values);
     for (const k of DEVICE_KEYS) p[k] = current[k];

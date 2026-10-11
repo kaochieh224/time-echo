@@ -203,7 +203,7 @@ export class Renderer {
         if (!this.memory) return;
         const screen = rgb(p.screen_colour);
         // 去溢色只在用到色鍵時生效
-        const despill = p.matte_source === 'key' ? p.despill / 100 : 0;
+        const despill = p.matte_source === 'key' || p.matte_source === 'ai_key' ? p.despill / 100 : 0;
         const bg = this.postBindGroup(SLOT.capture, [...screen, 0], [despill, isNeutral(screen) ? 1 : 0, 0, 0], [p.mirror ? 1 : 0, 0, 0, 0], this.src.view, this.mask.view, this.mask.view);
         const enc = this.device.createCommandEncoder();
         this.fullscreen(enc, this.pCapture, bg, this.memory.layerViews[layer]);

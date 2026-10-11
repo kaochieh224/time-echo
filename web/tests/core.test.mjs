@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { BeatClock, buildLut } from '../js/curve.js';
-import { buildMask, keyAlpha, refine } from '../js/matte.js';
+import { buildMask, keyAlpha, refine, resizeMask } from '../js/matte.js';
 import { EchoRing, MEMORY_BUDGET_BYTES, bufferSize, capacityFor, planEchoes } from '../js/memory.js';
 import { PRESETS, applyPreset, defaults, effectiveInterval, fromJSON } from '../js/params.js';
 
@@ -133,6 +133,27 @@ test('buildMask：全畫面不讀畫素，亮度遮罩取 Rec.709 亮度', () =>
     assert.deepEqual([...m.data], [255, 0, 182, 54]);
 });
 
+test('AI 遮罩：縮放到緩衝解析度、和色鍵相乘，模型沒載入時當成全畫面', () => {
+    near(resizeMask(new Float32Array([0, 1]), 2, 1, 4, 1)[1], 0.25);
+    const p = { ...defaults(), matte_source: 'ai', edge_softness: 0 };
+    const none = buildMask(p, 2, 2, () => assert.fail('不該讀畫素'), null);
+    assert.deepEqual([none.width, none.data[0]], [1, 255]);
+    // 模型輸出 1×1 的 0.5，放大成 2×2
+    const half = { data: new Float32Array([0.5]), width: 1, height: 1 };
+    const m = buildMask(p, 2, 2, () => assert.fail('純 AI 不該讀畫素'), () => half);
+    assert.deepEqual([...m.data], [128, 128, 128, 128]);
+    // 尺寸相同時也不能改到模型的輸出
+    const same = { data: new Float32Array([1, 1, 1, 1]), width: 2, height: 2 };
+    buildMask({ ...p, shrink_grow: -1 }, 2, 2, () => null, () => same);
+    assert.deepEqual([...same.data], [1, 1, 1, 1]);
+    // AI × 色鍵：綠幕的畫素被色鍵去掉，膚色保留 AI 的值
+    const green = [0, 176, 64, 255];
+    const skin = [217, 166, 140, 255];
+    const rgba = new Uint8ClampedArray([...green, ...skin, ...skin, ...green]);
+    const both = buildMask({ ...p, matte_source: 'ai_key', screen_colour: '#00B040' }, 2, 2, () => rgba, () => half);
+    assert.deepEqual([...both.data], [0, 128, 128, 0]);
+});
+
 test('參數：補預設值、夾範圍、桌面版預設組可載入', () => {
     const p = fromJSON('{"echo_count": 999, "clip_black": 80, "clip_white": 20, "bogus": 1, "spacing": "x"}');
     assert.equal(p.echo_count, 48);
@@ -140,16 +161,16 @@ test('參數：補預設值、夾範圍、桌面版預設組可載入', () => {
     assert.equal(p.clip_white, 81);
     assert.equal(p.spacing, defaults().spacing);
     assert.ok(!('bogus' in p));
-    // 桌面版的欄位：AI 遮罩換成亮度，解析度取最接近的選項，顏色正規化成大寫
-    const desktop = fromJSON('{"matte_source": "ai", "output_res": 1920, "buffer_res": 960, "bg_colour": "#ff000c", "video_alpha": true}');
-    assert.deepEqual([desktop.matte_source, desktop.output_res, desktop.buffer_res, desktop.bg_colour], ['luma', 1280, 640, '#FF000C']);
-    assert.equal(fromJSON('{"matte_source": "ai_key"}').matte_source, 'key');
+    // 桌面版的欄位：解析度取最接近的選項，顏色正規化成大寫，不認得的遮罩來源退回預設
+    const desktop = fromJSON('{"matte_source": "ai_key", "output_res": 1920, "buffer_res": 960, "bg_colour": "#ff000c", "video_alpha": true}');
+    assert.deepEqual([desktop.matte_source, desktop.output_res, desktop.buffer_res, desktop.bg_colour], ['ai_key', 1280, 640, '#FF000C']);
+    assert.equal(fromJSON('{"matte_source": "bogus"}').matte_source, 'ai');
 });
 
 test('套用預設組會保留裝置相關的欄位', () => {
-    const current = { ...defaults(), mirror: false, output_res: 720, buffer_res: 320, echo_count: 40 };
+    const current = { ...defaults(), mirror: false, matte_source: 'luma', output_res: 720, buffer_res: 320, echo_count: 40 };
     const demo = applyPreset(current, PRESETS.find((x) => x.name === '示範').values);
-    assert.deepEqual([demo.mirror, demo.output_res, demo.buffer_res], [false, 720, 320]);
+    assert.deepEqual([demo.mirror, demo.matte_source, demo.output_res, demo.buffer_res], [false, 'luma', 720, 320]);
     assert.deepEqual([demo.echo_count, demo.spacing, demo.bg_colour, demo.clip_white], [22, 241, '#FF000C', 65]);
     assert.deepEqual(applyPreset(defaults(), {}), defaults());
 });

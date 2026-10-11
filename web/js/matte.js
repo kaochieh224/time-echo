@@ -111,6 +111,28 @@ export function refine(mask, w, h, shrinkGrow, softness) {
     return mask;
 }
 
+/** 雙線性縮放遮罩；尺寸相同時直接回傳原陣列。 */
+export function resizeMask(src, sw, sh, w, h) {
+    if (sw === w && sh === h) return src;
+    const out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+        const fy = Math.min(sh - 1, Math.max(0, ((y + 0.5) / h) * sh - 0.5));
+        const y0 = Math.floor(fy);
+        const y1 = Math.min(sh - 1, y0 + 1);
+        const ty = fy - y0;
+        for (let x = 0; x < w; x++) {
+            const fx = Math.min(sw - 1, Math.max(0, ((x + 0.5) / w) * sw - 0.5));
+            const x0 = Math.floor(fx);
+            const x1 = Math.min(sw - 1, x0 + 1);
+            const tx = fx - x0;
+            const top = src[y0 * sw + x0] * (1 - tx) + src[y0 * sw + x1] * tx;
+            const bottom = src[y1 * sw + x0] * (1 - tx) + src[y1 * sw + x1] * tx;
+            out[y * w + x] = top * (1 - ty) + bottom * ty;
+        }
+    }
+    return out;
+}
+
 export function toU8(mask) {
     const out = new Uint8Array(mask.length);
     for (let i = 0; i < mask.length; i++) out[i] = clamp01(mask[i]) * 255 + 0.5;
@@ -119,15 +141,27 @@ export function toU8(mask) {
 
 /**
  * 依遮罩來源算出整理好的遮罩（R8，`w × h`）。
- * `readPixels()` 回傳緩衝解析度的 RGBA8；全畫面遮罩不需要畫素，所以用到才呼叫。
+ * `readPixels()` 回傳緩衝解析度的 RGBA8，用到才呼叫（全畫面與純 AI 遮罩不需要）。
+ * `segment()` 回傳 AI 的人物遮罩 { data, width, height }；模型還沒載入時傳 null，AI 部分當成全畫面。
  */
-export function buildMask(p, w, h, readPixels) {
-    if (p.matte_source === 'full') return { data: new Uint8Array([255]), width: 1, height: 1 };
-    const rgba = readPixels();
-    const mask =
-        p.matte_source === 'key'
-            ? keyMask(rgba, w, h, rgb(p.screen_colour), p.screen_gain / 100, p.screen_balance / 100)
-            : lumaMask(rgba, w, h);
+export function buildMask(p, w, h, readPixels, segment = null) {
+    const source = p.matte_source;
+    if (source === 'full' || (source === 'ai' && !segment)) return { data: new Uint8Array([255]), width: 1, height: 1 };
+    const key = () => keyMask(readPixels(), w, h, rgb(p.screen_colour), p.screen_gain / 100, p.screen_balance / 100);
+    let mask;
+    if ((source === 'ai' || source === 'ai_key') && segment) {
+        const ai = segment();
+        // 複製一份才能就地修改（尺寸相同時 resizeMask 會回傳原陣列）
+        mask = Float32Array.from(resizeMask(ai.data, ai.width, ai.height, w, h));
+        if (source === 'ai_key') {
+            const k = key();
+            for (let i = 0; i < mask.length; i++) mask[i] *= k[i];
+        }
+    } else if (source === 'luma') {
+        mask = lumaMask(readPixels(), w, h);
+    } else {
+        mask = key();
+    }
     refine(mask, w, h, p.shrink_grow, p.edge_softness);
     return { data: toU8(mask), width: w, height: h };
 }

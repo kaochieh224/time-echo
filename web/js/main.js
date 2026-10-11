@@ -4,6 +4,7 @@ import { Engine } from './engine.js';
 import { buildMask } from './matte.js';
 import { BUFFER_RES, OUTPUT_RES, PRESETS, applyPreset, defaults, effectiveInterval, fromJSON, fromObject, sanitize } from './params.js';
 import { Renderer } from './renderer.js';
+import { PersonSegmenter } from './segment.js';
 import { DemoSource, MAX_SOURCE_EDGE, openCamera, openFile } from './sources.js';
 
 const STORAGE_KEY = 'time-echo-web-params';
@@ -16,6 +17,8 @@ let facing = 'user';
 let frozen = false;
 let lastPush = null;
 let stopped = false;
+/** AI 分割器的狀態：idle → loading → ready／failed */
+let ai = { state: 'idle', segmenter: null, error: '' };
 
 // 來源太大時先縮到這張 canvas；遮罩用的畫素從 maskCanvas 讀
 const scaleCanvas = document.createElement('canvas');
@@ -77,8 +80,40 @@ const refreshers = [];
 
 function changed() {
     sanitize(p);
+    ensureAi();
     refresh();
     saveParams();
+}
+
+const usesAi = (q) => q.matte_source === 'ai' || q.matte_source === 'ai_key';
+
+/** 遮罩來源用到 AI 時才下載函式庫與模型（只試一次，失敗後要重新整理）。 */
+function ensureAi() {
+    if (!usesAi(p) || ai.state !== 'idle') return;
+    ai.state = 'loading';
+    PersonSegmenter.create().then(
+        (segmenter) => {
+            ai = { state: 'ready', segmenter, error: '' };
+            toast('AI 人物去背已就緒');
+            refresh();
+        },
+        (e) => {
+            console.error(e);
+            ai = { state: 'failed', segmenter: null, error: e.message };
+            toast('AI 模型載入失敗，先用全畫面；可以改用亮度或色鍵');
+            refresh();
+        },
+    );
+}
+
+function aiStatusText() {
+    if (!usesAi(p)) return '';
+    return {
+        idle: '',
+        loading: 'AI 模型下載中…（下載完成前先顯示全畫面）',
+        ready: `AI 人物去背已就緒（${ai.segmenter?.delegate}）`,
+        failed: `AI 模型載入失敗：${ai.error}`,
+    }[ai.state];
 }
 
 function refresh() {
@@ -154,6 +189,16 @@ function colour(key, label, opts = {}) {
 const group = (text) => el('div', { className: 'group' }, text);
 const hint = (text) => el('p', { className: 'hint' }, text);
 
+/** 內容會跟著狀態變的說明文字；空字串時隱藏。 */
+function liveHint(text) {
+    const node = el('p', { className: 'hint ctl' });
+    refreshers.push(() => {
+        node.textContent = text();
+        node.hidden = node.textContent === '';
+    });
+    return node;
+}
+
 function actions(...items) {
     return el(
         'div',
@@ -167,7 +212,7 @@ function actions(...items) {
 }
 
 function buildPanel() {
-    const usesKey = (q) => q.matte_source === 'key';
+    const usesKey = (q) => q.matte_source === 'key' || q.matte_source === 'ai_key';
     const hasMatte = (q) => q.matte_source !== 'full';
     const pages = [
         [
@@ -240,8 +285,9 @@ function buildPanel() {
         ],
         [
             '去背',
-            choice('matte_source', '遮罩來源', [['luma', '亮度'], ['key', '色鍵'], ['full', '全畫面']]),
-            hint('亮度遮罩適合深色背景；AI 人物去背會在下一版加入。'),
+            choice('matte_source', '遮罩來源', [['ai', 'AI 人物'], ['key', '色鍵'], ['ai_key', 'AI × 色鍵'], ['luma', '亮度'], ['full', '全畫面']]),
+            liveHint(aiStatusText),
+            hint('AI 人物適合一般場景；亮度遮罩適合深色背景。'),
             slider('clip_black', '黑階裁切', 0, 99, 1, ' %', { when: hasMatte }),
             slider('clip_white', '白階裁切', 1, 100, 1, ' %', { when: hasMatte }),
             slider('shrink_grow', '收縮／擴張', -10, 10, 1, ' px', { when: hasMatte }),
@@ -345,7 +391,15 @@ function updateBar() {
 
 function bindEvents() {
     $('btn-camera').addEventListener('click', startCamera);
-    $('btn-demo').addEventListener('click', () => setSource(new DemoSource()));
+    $('btn-demo').addEventListener('click', () => {
+        // 示範動畫是黑底上的火柴人，AI 認不出人，改用亮度遮罩
+        if (usesAi(p)) {
+            p.matte_source = 'luma';
+            changed();
+            toast('示範動畫不是真人，遮罩來源改成「亮度」');
+        }
+        setSource(new DemoSource());
+    });
     $('btn-file').addEventListener('click', () => $('file-video').click());
     $('file-video').addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -420,14 +474,27 @@ function sourceDrawable() {
 }
 
 function makeMask(drawable, bw, bh) {
-    return buildMask(p, bw, bh, () => {
+    // 來源先縮到緩衝解析度：色鍵與亮度讀它的畫素，AI 也吃這張小圖（模型輸出和輸入同尺寸）
+    let drawn = false;
+    const shrink = () => {
+        if (drawn) return;
+        drawn = true;
         if (maskCanvas.width !== bw || maskCanvas.height !== bh) {
             maskCanvas.width = bw;
             maskCanvas.height = bh;
         }
         maskCtx.drawImage(drawable, 0, 0, bw, bh);
+    };
+    const readPixels = () => {
+        shrink();
         return maskCtx.getImageData(0, 0, bw, bh).data;
-    });
+    };
+    const segmenter = ai.segmenter;
+    const segment = () => {
+        shrink();
+        return segmenter.segment(maskCanvas, performance.now());
+    };
+    return buildMask(p, bw, bh, readPixels, segmenter && segment);
 }
 
 let fpsFrames = 0;
@@ -478,6 +545,7 @@ async function init() {
     buildPanel();
     bindEvents();
     refresh();
+    ensureAi();
 
     if (!navigator.gpu) {
         fatal('這個瀏覽器不支援 WebGPU。請用 Android 的 Chrome 121 以上或 iOS 26 以上的 Safari，並確認網址是 https。');
@@ -521,4 +589,4 @@ init().catch((e) => {
 });
 
 // 給除錯用：在主控台可以看目前的參數與引擎狀態
-window.timeEcho = { get params() { return p; }, get engine() { return engine; }, fromObject };
+window.timeEcho = { get params() { return p; }, get engine() { return engine; }, get ai() { return ai; }, fromObject };
