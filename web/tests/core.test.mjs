@@ -9,6 +9,7 @@ import { BeatClock, buildLut } from '../js/curve.js';
 import { buildMask, keyAlpha, refine, resizeMask } from '../js/matte.js';
 import { EchoRing, MEMORY_BUDGET_BYTES, bufferSize, capacityFor, planEchoes } from '../js/memory.js';
 import { BLOCK_H, BLOCK_W, blockMean, compareOrientation, probeBlocks } from '../js/orientation.js';
+import { preferredDelegates } from '../js/segment.js';
 import { PRESETS, applyPreset, defaults, effectiveInterval, fromJSON } from '../js/params.js';
 
 const near = (a, b, eps = 1e-4) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
@@ -191,6 +192,18 @@ test('來源方向檢查：分得出正的、上下顛倒與分不出來', () =>
     // GPU 的內容和參考畫面對不起來時也不下結論
     const grey = [[128, 128, 128], [128, 128, 128], [128, 128, 128]];
     assert.equal(compareOrientation([grey, grey], [sky, floor]), 'unsure');
+});
+
+test('AI 分割的執行方式：WebKit 優先用 CPU，Blink 優先用 GPU', () => {
+    const chrome = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+    const edge = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0';
+    const safari = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+    // iPad 上的 Chrome 也是 WebKit，UA 裡是 CriOS 而不是 Chrome/
+    const chromeOnIpad = 'Mozilla/5.0 (iPad; CPU OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Mobile/15E148 Safari/604.1';
+    assert.deepEqual(preferredDelegates(chrome), ['GPU', 'CPU']);
+    assert.deepEqual(preferredDelegates(edge), ['GPU', 'CPU']);
+    assert.deepEqual(preferredDelegates(safari), ['CPU', 'GPU']);
+    assert.deepEqual(preferredDelegates(chromeOnIpad), ['CPU', 'GPU']);
 });
 
 test('參數：補預設值、夾範圍、桌面版預設組可載入', () => {

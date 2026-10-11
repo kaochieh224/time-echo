@@ -24,6 +24,8 @@ let recorder = null;
 let recording = null;
 /** 匯入的音樂：name 是檔名；ctx／tap 是把音樂接進錄影用的 WebAudio 節點 */
 const music = { name: '', url: '', ctx: null, tap: null };
+/** 在角落顯示遮罩小窗（除錯用，不存進參數） */
+let showMask = false;
 /** AI 分割器的狀態：idle → loading → ready／failed */
 let ai = { state: 'idle', segmenter: null, error: '' };
 
@@ -179,6 +181,17 @@ function check(key, label, opts = {}) {
     return node;
 }
 
+/** 不屬於參數的開關（不會存進預設組）。 */
+function toggle(label, get, set) {
+    const input = el('input', { type: 'checkbox' });
+    input.addEventListener('change', () => {
+        set(input.checked);
+        refresh();
+    });
+    refreshers.push(() => (input.checked = get()));
+    return el('label', { className: 'check ctl' }, input, label);
+}
+
 function colour(key, label, opts = {}) {
     const input = el('input', { type: 'color' });
     input.addEventListener('input', () => {
@@ -298,6 +311,10 @@ function buildPanel() {
             choice('matte_source', '遮罩來源', [['ai', 'AI 人物'], ['key', '色鍵'], ['ai_key', 'AI × 色鍵'], ['luma', '亮度'], ['full', '全畫面']]),
             liveHint(aiStatusText),
             hint('AI 人物適合一般場景；亮度遮罩適合深色背景。'),
+            toggle('顯示遮罩小窗（白色 = 保留的部分）', () => showMask, (v) => {
+                showMask = v;
+                $('mask-view').hidden = !v;
+            }),
             slider('clip_black', '黑階裁切', 0, 99, 1, ' %', { when: hasMatte }),
             slider('clip_white', '白階裁切', 1, 100, 1, ' %', { when: hasMatte }),
             slider('shrink_grow', '收縮／擴張', -10, 10, 1, ' px', { when: hasMatte }),
@@ -635,16 +652,27 @@ function makeMask(drawable, bw, bh) {
         }
         maskCtx.drawImage(drawable, 0, 0, bw, bh);
     };
-    const readPixels = () => {
-        shrink();
-        return maskCtx.getImageData(0, 0, bw, bh).data;
-    };
+    let image = null;
+    const readImage = () => (image ??= (shrink(), maskCtx.getImageData(0, 0, bw, bh)));
     const segmenter = ai.segmenter;
-    const segment = () => {
-        shrink();
-        return segmenter.segment(maskCanvas, performance.now());
-    };
-    return buildMask(p, bw, bh, readPixels, segmenter && segment);
+    const mask = buildMask(p, bw, bh, () => readImage().data, segmenter && (() => segmenter.segment(readImage(), performance.now())));
+    if (showMask) drawMaskView(mask);
+    return mask;
+}
+
+/** 把遮罩畫到角落的小窗（白 = 保留）。全畫面遮罩是 1×1，整個填白。 */
+function drawMaskView({ data, width, height }) {
+    const view = $('mask-view');
+    if (view.width !== width || view.height !== height) {
+        view.width = width;
+        view.height = height;
+    }
+    const image = new ImageData(width, height);
+    const px = new Uint32Array(image.data.buffer);
+    for (let i = 0; i < data.length; i++) px[i] = 0xff000000 | (data[i] * 0x010101);
+    view.getContext('2d').putImageData(image, 0, 0);
+    // 輸出有鏡像時小窗也鏡像，才對得上
+    view.style.transform = p.mirror ? 'scaleX(-1)' : '';
 }
 
 let fpsFrames = 0;

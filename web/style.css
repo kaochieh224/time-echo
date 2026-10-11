@@ -123,6 +123,20 @@ body {
     gap: 10px;
 }
 
+#mask-view {
+    position: absolute;
+    top: 34px;
+    right: 10px;
+    width: min(34%, 200px);
+    border: 1px solid var(--line);
+    background: #000;
+    pointer-events: none;
+}
+
+#mask-view[hidden] {
+    display: none;
+}
+
 #btn-rec {
     position: absolute;
     right: 12px;
